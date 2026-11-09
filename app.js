@@ -8,7 +8,7 @@
 const API = 'https://api.opendota.com/api';
 const CDN = 'https://cdn.cloudflare.steamstatic.com';
 const KEY = 'd2helper_db_v1';
-const VERSION = '1.2.0';
+const VERSION = '1.3.0';
 
 const BRACKETS = [
   { v: '1', n: 'Рекрут' }, { v: '2', n: 'Страж' }, { v: '3', n: 'Рыцарь' }, { v: '4', n: 'Герой' },
@@ -517,7 +517,7 @@ function bindRoutine(el) {
 /* ============================================================
    МЕТА
    ============================================================ */
-const metaUI = { role: '', attr: '', q: '', sort: 'score', dir: -1, mode: 'tiers', minPr: true };
+const metaUI = { role: '', attr: '', q: '', sort: 'score', dir: -1, mode: 'tiers', minPr: true, pos: 0 };
 function renderMeta(el) {
   setActions(`<div class="seg" id="mMode"><button data-m="tiers" class="${metaUI.mode === 'tiers' ? 'on' : ''}">Тир-лист</button><button data-m="table" class="${metaUI.mode === 'table' ? 'on' : ''}">Таблица</button></div>`);
   $$('#mMode button').forEach(b => b.onclick = () => { metaUI.mode = b.dataset.m; renderMeta(el); });
@@ -530,6 +530,7 @@ function renderMeta(el) {
           </div>
           <div class="row">
             <label class="search">${ic('search')}<input class="input" id="mQ" placeholder="Поиск героя…" value="${esc(metaUI.q)}"></label>
+            <select class="input" id="mPos" style="width:auto" title="Позиции определяются по про-матчам за 60 дней"><option value="0">Все позиции</option>${POS.map((p, i) => `<option value="${i + 1}" ${metaUI.pos === i + 1 ? 'selected' : ''}>${p}</option>`).join('')}</select>
             <select class="input" id="mRole" style="width:auto"><option value="">Все роли</option>${Object.entries(ROLES).map(([k, v]) => `<option value="${k}" ${metaUI.role === k ? 'selected' : ''}>${v}</option>`).join('')}</select>
             <div class="chips" id="mAttr"><button class="chip ${!metaUI.attr ? 'on' : ''}" data-a="">Все</button>${Object.entries(ATTRS).map(([k, v]) => `<button class="chip ${metaUI.attr === k ? 'on' : ''}" data-a="${k}"><span class="attr a-${k}"></span> ${v}</button>`).join('')}</div>
           </div>
@@ -540,6 +541,7 @@ function renderMeta(el) {
     $$('#mBr .chip').forEach(c => c.onclick = () => { db.bracket = c.dataset.b; save(); $$('#mBr .chip').forEach(x => x.classList.toggle('on', x === c)); drawMetaList(); });
     $$('#mAttr .chip').forEach(c => c.onclick = () => { metaUI.attr = c.dataset.a; $$('#mAttr .chip').forEach(x => x.classList.toggle('on', x === c)); drawMetaList(); });
     $('#mRole').onchange = e => { metaUI.role = e.target.value; drawMetaList(); };
+    $('#mPos').onchange = e => { metaUI.pos = +e.target.value; drawMetaList(); };
     $('#mQ').oninput = e => { metaUI.q = e.target.value; drawMetaList(); };
     drawMetaList();
   });
@@ -548,6 +550,12 @@ function drawMetaList() {
   const box = $('#mList'); if (!box) return;
   let rows = bracketStats(db.bracket);
   if (!rows.some(r => r.picks > 0)) { box.innerHTML = '<div class="empty"><div class="big">📭</div>OpenDota сейчас не отдаёт статистику по этому рангу. Выбери соседний ранг.</div>'; return; }
+  if (metaUI.pos && !ALLPOS) {
+    box.innerHTML = '<div class="spinner"></div><p class="muted" style="text-align:center">Определяю позиции героев по про-матчам… (первый раз до 15 секунд)</p>';
+    loadAllPositions().then(drawMetaList).catch(() => { ALLPOS = {}; toast('Не удалось загрузить позиции — использую роли героев'); drawMetaList(); });
+    return;
+  }
+  if (metaUI.pos) rows = rows.filter(r => heroFitsPos(r.h, metaUI.pos));
   const q = metaUI.q.trim().toLowerCase();
   rows = rows.filter(r => (!metaUI.role || r.h.roles.includes(metaUI.role)) && (!metaUI.attr || r.h.primary_attr === metaUI.attr) && (!q || r.h.localized_name.toLowerCase().includes(q)));
   const isPro = db.bracket === 'pro';
@@ -589,11 +597,11 @@ function drawMetaList() {
    ============================================================ */
 let buildsQ = '';
 function renderBuilds(el, p = []) {
-  const [id, mode, bid] = p;
+  const [id, mode, bid, posArg] = p;
   withHeroes(el, () => {
     const h = HERO[id];
     if (!h) { draft = null; return renderHeroPicker(el); }
-    if (mode === 'edit') return renderBuildEditor(el, h, bid);
+    if (mode === 'edit') return renderBuildEditor(el, h, bid, +posArg || 0);
     draft = null;
     renderHeroPage(el, h);
   });
@@ -653,13 +661,18 @@ function renderHeroPage(el, h) {
       </div>
     </div>
 
+    <div class="card">
+      <div class="card-head"><div><h3>🧭 Позиции</h3><div class="sub">На какие позиции берут ${esc(h.localized_name)} в про-матчах за полгода. Выбери позицию — предметы и твои руководства отфильтруются</div></div></div>
+      <div id="hPos"><div class="spinner" style="margin:16px auto"></div></div>
+    </div>
+
     <div class="grid g2" id="hMatchups">
       <div class="card mu good"><div class="card-head"><div><h3>💪 Силён против</h3><div class="sub">Топ-5 героев, против которых ${esc(h.localized_name)} чаще побеждает</div></div></div><div class="mu-list"><div class="spinner" style="margin:16px auto"></div></div></div>
       <div class="card mu bad"><div class="card-head"><div><h3>⚠️ Слаб против</h3><div class="sub">Топ-5 героев, против которых ${esc(h.localized_name)} чаще проигрывает</div></div></div><div class="mu-list"><div class="spinner" style="margin:16px auto"></div></div></div>
     </div>
 
     <div class="card">
-      <div class="card-head"><div><h3>Популярные предметы</h3><div class="sub">Что чаще всего покупают на ${esc(h.localized_name)} в публичных матчах (OpenDota)</div></div></div>
+      <div class="card-head"><div><h3>Популярные предметы</h3><div class="sub">Что чаще всего покупают на ${esc(h.localized_name)} в публичных матчах, все позиции вместе (OpenDota)</div></div></div>
       <div id="hItems"><div class="spinner" style="margin:20px auto"></div></div>
     </div>
 
@@ -680,11 +693,14 @@ function renderHeroPage(el, h) {
     $$('#hMatchups .mu-list').forEach(b => { b.innerHTML = '<div class="muted">Не удалось загрузить матчапы OpenDota.</div>'; });
   });
 
-  const goNew = () => { location.hash = `#/builds/${h.id}/edit/new`; };
+  const goNew = () => { location.hash = `#/builds/${h.id}/edit/new` + (heroPos[h.id] ? '/' + heroPos[h.id] : ''); };
   $('#hNew').onclick = goNew; $('#hNew2').onclick = goNew;
   $('#hNote').onclick = () => openNoteModal({ hero: h.localized_name });
+  curAbil = null;
   drawBuildCards(h, null);
   Promise.all([loadItems(), loadHeroAbilities(h).catch(() => null)]).then(([, abil]) => drawBuildCards(h, abil)).catch(() => { });
+  Promise.all([loadItems(), loadHeroPositions(h.id)]).then(([, data]) => drawHeroPositions(h, data))
+    .catch(() => { const b = $('#hPos'); if (b) b.innerHTML = '<div class="muted">Не удалось загрузить позиции из OpenDota. Попробуй позже.</div>'; });
 
   Promise.all([loadItems(), loadItemPop(h.id)]).then(([items, pop]) => {
     const box = $('#hItems'); if (!box) return;
@@ -778,13 +794,110 @@ function skillCheck(seq, abil) {
   return null;
 }
 
+/* ---------- позиции героя (про-матчи, OpenDota explorer) ---------- */
+// Позиция игрока: мид = игрок центральной линии с наибольшим GPM (саппорт, зашедший на мид, мидером не считается);
+// остальные 4 игрока команды по GPM: 1-й → pos 1, 2-й → pos 3, 3-й → pos 4, 4-й → pos 5
+const POS_SHORT = ['Керри', 'Мид', 'Хардлейн', 'Роумер', 'Саппорт'];
+const POS_CASE = `CASE WHEN is_mid THEN 2 WHEN rk = 1 THEN 1 WHEN rk = 2 THEN 3 WHEN rk = 3 THEN 4 ELSE 5 END`;
+const posCTE = (where, cols = '') => `
+  p0 AS (SELECT pm.match_id, pm.hero_id, pm.lane_role, pm.gold_per_min AS gpm, (pm.player_slot < 128) AS rad ${cols},
+    row_number() OVER (PARTITION BY pm.match_id, (pm.player_slot < 128), (pm.lane_role = 2) ORDER BY pm.gold_per_min DESC) AS rk_mid
+    FROM player_matches pm JOIN matches m USING (match_id) WHERE pm.lane_role IS NOT NULL AND ${where}),
+  p1 AS (SELECT *, (lane_role = 2 AND rk_mid = 1) AS is_mid FROM p0),
+  p AS (SELECT *, row_number() OVER (PARTITION BY match_id, rad, is_mid ORDER BY gpm DESC) AS rk FROM p1)`;
+async function explorer(sql) {
+  const r = await fetch(API + '/explorer?sql=' + encodeURIComponent(sql));
+  const d = await r.json().catch(() => ({}));
+  if (!r.ok || d.err) throw new Error(d.err || r.status);
+  return d.rows || [];
+}
+async function loadHeroPositions(heroId) {
+  const id = parseInt(heroId, 10);
+  const k = 'd2h_pos2_' + id;
+  const c = cacheGet(k, 24 * 36e5);
+  if (c) return c.data;
+  const base = `WITH ms AS (SELECT pm.match_id FROM player_matches pm JOIN matches m USING (match_id)
+      WHERE pm.hero_id = ${id} AND m.start_time > extract(epoch from now() - interval '180 days')),
+    ${posCTE('pm.match_id IN (SELECT match_id FROM ms)', `, ((pm.player_slot < 128) = m.radiant_win) AS win,
+      ARRAY[pm.item_0,pm.item_1,pm.item_2,pm.item_3,pm.item_4,pm.item_5] AS inv`)}`;
+  const [stats, items] = await Promise.all([
+    explorer(`${base} SELECT ${POS_CASE} AS pos, count(*) AS games, sum(CASE WHEN win THEN 1 ELSE 0 END) AS wins FROM p WHERE hero_id = ${id} GROUP BY 1`),
+    explorer(`${base}, q AS (SELECT ${POS_CASE} AS pos, unnest(inv) AS item FROM p WHERE hero_id = ${id})
+      SELECT pos, item, count(*) AS n FROM q WHERE item > 0 GROUP BY 1, 2 HAVING count(*) >= 3`),
+  ]);
+  const data = { stats: stats.map(r => ({ pos: +r.pos, games: +r.games, wins: +r.wins })), items: items.map(r => ({ pos: +r.pos, item: +r.item, n: +r.n })) };
+  cacheSet(k, data);
+  return data;
+}
+let ALLPOS = null, allPosPromise = null;
+function loadAllPositions() {
+  if (ALLPOS) return Promise.resolve(ALLPOS);
+  const c = cacheGet('d2h_allpos2', 24 * 36e5);
+  if (c) return Promise.resolve(ALLPOS = c.data);
+  if (allPosPromise) return allPosPromise;
+  allPosPromise = explorer(`WITH ${posCTE(`m.start_time > extract(epoch from now() - interval '60 days')`)}
+    SELECT hero_id, ${POS_CASE} AS pos, count(*) AS games FROM p GROUP BY 1, 2`)
+    .then(rows => {
+      const map = {};
+      rows.forEach(r => { const m = map[r.hero_id] = map[r.hero_id] || { total: 0 }; m[r.pos] = +r.games; m.total += +r.games; });
+      cacheSet('d2h_allpos2', map);
+      return (ALLPOS = map);
+    })
+    .finally(() => { allPosPromise = null; });
+  return allPosPromise;
+}
+// Подходит ли герой на позицию: по про-матчам (≥12% игр и минимум 3 игры), а если игр мало — по ролям героя
+function heroFitsPos(h, pos) {
+  const m = ALLPOS && ALLPOS[h.id];
+  if (m && m.total >= 15) return (m[pos] || 0) >= 3 && (m[pos] || 0) / m.total >= 0.12;
+  const r = h.roles;
+  const sup = r.includes('Support');
+  if (pos === 1) return r.includes('Carry') && !sup;
+  if (pos === 2) return r.includes('Nuker') && (r.includes('Carry') || r.includes('Escape')) && !sup;
+  if (pos === 3) return (r.includes('Durable') || r.includes('Initiator')) && !sup;
+  return sup;
+}
+
+const heroPos = {}; // выбранная позиция на странице героя: heroId → 0..5
+let curAbil = null;
+function drawHeroPositions(h, data) {
+  const box = $('#hPos'); if (!box) return;
+  const total = data.stats.reduce((a, s) => a + s.games, 0);
+  const list = data.stats.filter(s => s.games >= 5 && s.games / total >= 0.04).sort((a, b) => a.pos - b.pos);
+  if (!list.length) { box.innerHTML = `<div class="muted">Слишком мало про-матчей с ${esc(h.localized_name)} за последние полгода, чтобы определить позиции.</div>`; return; }
+  if (heroPos[h.id] == null) heroPos[h.id] = list.slice().sort((a, b) => b.games - a.games)[0].pos;
+  const sel = heroPos[h.id];
+  const tab = (pos, title, sub, share, extra = '') => `<button type="button" class="pos-tab ${sel === pos ? 'on' : ''}" data-pos="${pos}">
+      <b>${title}</b><span>${sub}</span>${extra}<i class="pbar"><i style="width:${share}%"></i></i></button>`;
+  const tabs = tab(0, 'Все', 'позиции', 100, `<em>${total} ${plural(total, 'игра', 'игры', 'игр')}</em>`) + list.map(s => {
+    const share = s.games / total * 100, wr = s.wins / s.games * 100;
+    return tab(s.pos, 'Pos ' + s.pos, POS_SHORT[s.pos - 1], share, `<em>${pct(share, 0)} игр · <span class="${wr >= 50 ? 'pos' : 'neg'}">WR ${pct(wr, 0)}</span></em>`);
+  }).join('');
+  // предметы в конце игры на выбранной позиции
+  const games = sel ? (data.stats.find(s => s.pos === sel)?.games || 0) : total;
+  const agg = {};
+  data.items.filter(it => !sel || it.pos === sel).forEach(it => { agg[it.item] = (agg[it.item] || 0) + it.n; });
+  const top = Object.entries(agg).map(([id, n]) => ({ it: ITEMS?.[id], n })).filter(x => x.it && !ITEM_SKIP.test(x.it.key) && !['tpscroll', 'ward_observer', 'ward_sentry', 'dust', 'smoke_of_deceit', 'tango', 'flask', 'clarity', 'enchanted_mango', 'faerie_fire', 'blood_grenade'].includes(x.it.key))
+    .sort((a, b) => b.n - a.n).slice(0, 12);
+  box.innerHTML = `<div class="pos-tabs">${tabs}</div>
+    <div class="lbl" style="margin-top:16px">${sel ? `Чаще всего в инвентаре к концу игры на Pos ${sel} · ${POS_SHORT[sel - 1]}` : 'Чаще всего в инвентаре к концу игры (все позиции)'}</div>
+    <div class="pos-items">${top.map(x => `<div class="pos-item" title="${esc(x.it.n)}"><img src="${CDN + x.it.img}" alt="" loading="lazy"><span>${esc(x.it.n)}</span><em>${pct(Math.min(100, x.n / games * 100), 0)}</em></div>`).join('') || '<span class="muted">Нет данных</span>'}</div>`;
+  $$('.pos-tab', box).forEach(b => b.onclick = () => { heroPos[h.id] = +b.dataset.pos; drawHeroPositions(h, data); drawBuildCards(h, curAbil); });
+  drawBuildCards(h, curAbil);
+}
+
 /* ---------- отображение готового руководства ---------- */
 function drawBuildCards(h, abil) {
   const box = $('#hBuilds'); if (!box) return;
-  const builds = db.builds[h.id] || [];
-  if (!builds.length) { box.innerHTML = `<div class="empty"><div class="big">🛠️</div>Создай своё первое руководство на ${esc(h.localized_name)}: предметы по стадиям игры, порядок прокачки и таланты.</div>`; return; }
+  if (abil) curAbil = abil;
+  abil = abil || curAbil;
+  const allBuilds = db.builds[h.id] || [];
+  const sel = heroPos[h.id] || 0;
+  const builds = sel ? allBuilds.filter(b => !b.pos || b.pos === POS[sel - 1]) : allBuilds;
+  if (!allBuilds.length) { box.innerHTML = `<div class="empty"><div class="big">🛠️</div>Создай своё первое руководство на ${esc(h.localized_name)}: предметы по стадиям игры, порядок прокачки и таланты.</div>`; return; }
+  if (!builds.length) { box.innerHTML = `<div class="empty"><div class="big">🧭</div>Нет руководств для Pos ${sel} · ${POS_SHORT[sel - 1]}. Всего руководств на героя: ${allBuilds.length} — выбери «Все» или создай новое для этой позиции.</div>`; return; }
   const abilByKey = {}; (abil?.abilities || []).forEach(a => { abilByKey[a.key] = a; });
-  box.innerHTML = builds.map(b => {
+  box.innerHTML = (sel && builds.length < allBuilds.length ? `<div class="muted" style="font-size:12.5px">Показаны руководства для Pos ${sel} и без позиции · ${builds.length} из ${allBuilds.length}</div>` : '') + builds.map(b => {
     let body = '';
     if (b.groups) {
       body += b.groups.filter(g => g.items.length).map(g => {
@@ -819,17 +932,17 @@ function drawBuildCards(h, abil) {
   $$('[data-bid]', box).forEach(c => {
     const b = builds.find(x => x.id === c.dataset.bid);
     $('[data-edit]', c).onclick = () => { location.hash = `#/builds/${h.id}/edit/${b.id}`; };
-    $('[data-del]', c).onclick = async () => { if (await askConfirm('Удалить руководство «' + b.title + '»?')) { db.builds[h.id] = builds.filter(x => x !== b); save(); rerender(); } };
+    $('[data-del]', c).onclick = async () => { if (await askConfirm('Удалить руководство «' + b.title + '»?')) { db.builds[h.id] = (db.builds[h.id] || []).filter(x => x !== b); save(); rerender(); } };
   });
 }
 
 /* ---------- редактор ---------- */
-async function renderBuildEditor(el, h, bid) {
+async function renderBuildEditor(el, h, bid, posArg = 0) {
   const list = db.builds[h.id] || [];
   const src = bid && bid !== 'new' ? list.find(b => b.id === bid) : null;
   const key = h.id + '/' + (src ? src.id : 'new');
   if (!draft || draft._key !== key) {
-    draft = src ? normalizeBuild(JSON.parse(JSON.stringify(src))) : normalizeBuild({ title: '', pos: '', groups: DEFAULT_GROUPS.map(n => ({ id: uid(), name: n, items: [] })), skills: [], talents: {}, note: '' });
+    draft = src ? normalizeBuild(JSON.parse(JSON.stringify(src))) : normalizeBuild({ title: '', pos: POS[posArg - 1] || '', groups: DEFAULT_GROUPS.map(n => ({ id: uid(), name: n, items: [] })), skills: [], talents: {}, note: '' });
     draft._key = key;
   }
   $('#pageTitle').textContent = src ? 'Редактирование руководства' : 'Новое руководство';
