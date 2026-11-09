@@ -1,4 +1,4 @@
-﻿'use strict';
+'use strict';
 /* ============================================================
    D2Helper — личный дневник игрока Dota 2
    Данные меты и билдов: OpenDota API (бесплатно, без ключа)
@@ -8,7 +8,7 @@
 const API = 'https://api.opendota.com/api';
 const CDN = 'https://cdn.cloudflare.steamstatic.com';
 const KEY = 'd2helper_db_v1';
-const VERSION = '1.4.0';
+const VERSION = '1.4.1';
 
 const BRACKETS = [
   { v: '1', n: 'Рекрут' }, { v: '2', n: 'Страж' }, { v: '3', n: 'Рыцарь' }, { v: '4', n: 'Герой' },
@@ -518,7 +518,20 @@ function bindRoutine(el) {
    МЕТА
    ============================================================ */
 const metaUI = { role: '', attr: '', q: '', sort: 'score', dir: -1, mode: 'tiers', minPr: true, pos: 0 };
+// Номер актуального патча (с буквой): patch.json обновляет GitHub Actions с сайта Valve, запасной вариант — OpenDota
+let patchPromise = null;
+function loadPatch() {
+  const c = cacheGet('d2h_patch', 3 * 36e5); if (c) return Promise.resolve(c.data);
+  if (patchPromise) return patchPromise;
+  patchPromise = fetch('patch.json', { cache: 'no-cache' }).then(r => r.ok ? r.json() : Promise.reject()).then(j => j.patch)
+    .catch(() => fetch(API + '/constants/patch').then(r => r.json()).then(l => l[l.length - 1].name))
+    .then(p => { if (p) cacheSet('d2h_patch', p); return p; })
+    .catch(() => cacheGet('d2h_patch', Infinity)?.data || null)
+    .finally(() => { patchPromise = null; });
+  return patchPromise;
+}
 function renderMeta(el) {
+  loadPatch().then(p => { const cr = $('#crumb'); if (p && cr.textContent.startsWith('Актуальный патч')) cr.innerHTML = `Актуальный патч <span style="text-transform:none">${esc(p)}</span> · OpenDota`; });
   setActions(`<div class="seg" id="mMode"><button data-m="tiers" class="${metaUI.mode === 'tiers' ? 'on' : ''}">Тир-лист</button><button data-m="table" class="${metaUI.mode === 'table' ? 'on' : ''}">Таблица</button></div>`);
   $$('#mMode button').forEach(b => b.onclick = () => { metaUI.mode = b.dataset.m; renderMeta(el); });
   withHeroes(el, () => {

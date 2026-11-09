@@ -1,0 +1,26 @@
+name: Update patch number
+on:
+  schedule:
+    - cron: '17 */3 * * *'
+  workflow_dispatch:
+permissions:
+  contents: write
+jobs:
+  patch:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Fetch latest patch from Valve
+        run: |
+          P=$(curl -fsSL 'https://www.dota2.com/datafeed/patchnoteslist?language=english' | jq -r '.patches | sort_by(.patch_timestamp) | last | .patch_number')
+          if [ -z "$P" ] || [ "$P" = "null" ]; then echo "no patch"; exit 0; fi
+          echo "{\"patch\":\"$P\"}" > patch.json
+          cat patch.json
+      - name: Commit if changed
+        run: |
+          if git diff --quiet -- patch.json && git ls-files --error-unmatch patch.json >/dev/null 2>&1; then echo "unchanged"; exit 0; fi
+          git config user.name "github-actions[bot]"
+          git config user.email "41898283+github-actions[bot]@users.noreply.github.com"
+          git add patch.json
+          git commit -m "patch: $(jq -r .patch patch.json)"
+          git push
