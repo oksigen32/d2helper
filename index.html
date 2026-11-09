@@ -1,0 +1,57 @@
+<!doctype html>
+<html lang="ru">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>D2Helper</title>
+<link rel="icon" type="image/png" href="icon.png">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Cinzel:wght@700;900&family=Exo+2:wght@500;600;700;800&family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="styles.css">
+</head>
+<body>
+<div class="app">
+  <aside class="sidebar">
+    <a class="logo" href="#/dashboard">
+      <span class="logo-mark">
+        <svg viewBox="0 0 32 32"><path d="M4 4h8l16 16v8h-8L4 12z" fill="currentColor" opacity=".9"/><path d="M28 4v8l-6 6-8-8 6-6z" fill="currentColor" opacity=".55"/><path d="M4 28v-8l6-6 8 8-6 6z" fill="currentColor" opacity=".55"/></svg>
+      </span>
+      <span class="logo-text">D2<b>HELPER</b></span>
+    </a>
+    <div class="side-caption">Дневник игрока</div>
+    <nav class="nav" id="nav"></nav>
+    <div class="side-foot">
+      <div class="meta-status" id="metaStatus">
+        <span class="dot"></span><span class="txt">Мета не загружена</span>
+      </div>
+      <button class="btn btn-ghost btn-sm w100" id="refreshMeta">
+        <svg viewBox="0 0 24 24" class="ic"><path d="M20 11a8 8 0 1 0-2.3 5.7M20 4v7h-7" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/></svg>
+        Обновить мету
+      </button>
+    </div>
+  </aside>
+
+  <main class="main">
+    <header class="topbar">
+      <div>
+        <div class="crumb" id="crumb">D2Helper</div>
+        <h1 id="pageTitle">Главная</h1>
+      </div>
+      <div class="top-actions" id="topActions"></div>
+    </header>
+    <section id="view" class="view"></section>
+  </main>
+</div>
+
+<datalist id="heroList"></datalist>
+<div class="modal-wrap" id="modal" hidden>
+  <div class="modal">
+    <div class="modal-head"><h3 id="modalTitle"></h3><button class="icon-btn" data-close aria-label="Закрыть">✕</button></div>
+    <form id="modalForm" class="modal-body"></form>
+  </div>
+</div>
+<div class="toasts" id="toasts"></div>
+<script src="app.js"></script>
+</body>
+</html>
