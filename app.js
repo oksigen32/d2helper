@@ -420,7 +420,6 @@ function renderDashboard(el) {
   const streak = trainStreak();
   const weekAgo = addDays(today(), -7);
   const weekMin = db.trainings.filter(t => t.date > weekAgo).reduce((a, t) => a + (+t.minutes || 0), 0);
-  const tip = TIPS[new Date().getDate() % TIPS.length];
   const hr = new Date().getHours();
   const hello = hr < 6 ? 'Доброй ночи' : hr < 12 ? 'Доброе утро' : hr < 18 ? 'Добрый день' : 'Добрый вечер';
   const checks = db.checks[today()] || [];
@@ -435,9 +434,7 @@ function renderDashboard(el) {
     <div class="hello">
       <svg class="hello-art" viewBox="0 0 32 32"><path d="M4 4h8l16 16v8h-8L4 12z" fill="currentColor"/><path d="M28 4v8l-6 6-8-8 6-6z" fill="currentColor"/><path d="M4 28v-8l6-6 8 8-6 6z" fill="currentColor"/></svg>
       <h2>${hello}${db.nick ? ', ' + esc(db.nick) : ''}!</h2>
-      <p>${fmtDateLong(today()).replace(/\s?г\.$/, '')}. ${checks.length >= db.routine.length && db.routine.length ? 'Дневная рутина выполнена — так держать 🔥' : `Сегодня в рутине: ${checks.length} из ${db.routine.length}. Небольшой шаг каждый день — и ПТС растёт.`}</p>
-      <div class="tip">💡 <span><b>Совет дня:</b> ${esc(tip)}</span></div>
-    </div>
+      <p>${fmtDateLong(today()).replace(/\s?г\.$/, '')}. ${checks.length >= db.routine.length && db.routine.length ? 'Дневная рутина выполнена — так держать 🔥' : `Сегодня в рутине: ${checks.length} из ${db.routine.length}. Небольшой шаг каждый день — и ПТС растёт.`}</p>    </div>
 
     <div class="grid g4">
       <div class="card kpi" style="--accent:var(--gold)"><div class="lbl">${ic('trophy')}Текущий ПТС</div><div class="val">${m.cur}</div><div class="hint">Пик: ${m.peak}</div></div>
