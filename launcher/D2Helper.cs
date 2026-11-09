@@ -12,10 +12,22 @@ static class Program
     {
         string dir = AppDomain.CurrentDomain.BaseDirectory;
         string html = Path.Combine(dir, "index.html");
-        if (!File.Exists(html))
+        // Онлайн-адрес из app-url.txt (обновления приходят сразу всем), иначе — локальные файлы
+        string url = null;
+        string cfg = Path.Combine(dir, "app-url.txt");
+        if (File.Exists(cfg))
         {
-            MessageBox.Show("Не найден файл index.html рядом с D2Helper.exe.\nДержи exe в папке приложения.", "D2Helper", MessageBoxButtons.OK, MessageBoxIcon.Error);
-            return;
+            string u = File.ReadAllText(cfg).Trim();
+            if (u.StartsWith("https://")) url = u;
+        }
+        if (url == null)
+        {
+            if (!File.Exists(html))
+            {
+                MessageBox.Show("Не найден app-url.txt или index.html рядом с D2Helper.exe.", "D2Helper", MessageBoxButtons.OK, MessageBoxIcon.Error);
+                return;
+            }
+            url = new Uri(html).AbsoluteUri;
         }
 
         string pf86 = Environment.GetFolderPath(Environment.SpecialFolder.ProgramFilesX86);
@@ -38,14 +50,6 @@ static class Program
 
         string profile = Path.Combine(dir, @"data\profile");
         Directory.CreateDirectory(profile);
-        // Онлайн-адрес из app-url.txt (обновления приходят сразу всем), иначе — локальные файлы
-        string url = new Uri(html).AbsoluteUri;
-        string cfg = Path.Combine(dir, "app-url.txt");
-        if (File.Exists(cfg))
-        {
-            string u = File.ReadAllText(cfg).Trim();
-            if (u.StartsWith("https://")) url = u;
-        }
         string args = "--app=\"" + url + "\" --user-data-dir=\"" + profile + "\" --no-first-run --no-default-browser-check " +
                       "--window-size=1440,920 --disable-features=Translate,msEdgeSidebarV2 --edge-skip-compat-layer-relaunch";
         try
