@@ -8,11 +8,12 @@
 const API = 'https://api.opendota.com/api';
 const CDN = 'https://cdn.cloudflare.steamstatic.com';
 const KEY = 'd2helper_db_v1';
-const VERSION = '1.1.0';
+const VERSION = '1.2.0';
 
 const BRACKETS = [
   { v: '1', n: 'Рекрут' }, { v: '2', n: 'Страж' }, { v: '3', n: 'Рыцарь' }, { v: '4', n: 'Герой' },
-  { v: '5', n: 'Легенда' }, { v: '6', n: 'Властелин' }, { v: '7', n: 'Божество' }, { v: '8', n: 'Титан' },
+  // OpenDota не отдаёт статистику по рангу Титан (bracket 8 всегда пустой) — объединяем с Божеством
+  { v: '5', n: 'Легенда' }, { v: '6', n: 'Властелин' }, { v: '7', n: 'Божество / Титан' },
   { v: 'pro', n: 'Про-сцена' },
 ];
 const ROLES = { Carry: 'Керри', Support: 'Саппорт', Nuker: 'Нюкер', Disabler: 'Контроль', Initiator: 'Инициатор', Durable: 'Танк', Escape: 'Мобильность', Pusher: 'Пушер', Jungler: 'Лесник' };
@@ -93,6 +94,7 @@ const defaults = () => ({
 });
 let db;
 try { db = Object.assign(defaults(), JSON.parse(localStorage.getItem(KEY) || '{}')); } catch { db = defaults(); }
+if (db.bracket === '8') db.bracket = '7';
 function save() { try { localStorage.setItem(KEY, JSON.stringify(db)); } catch { toast('Не удалось сохранить данные'); } }
 function cacheGet(k, maxAge) { try { const o = JSON.parse(localStorage.getItem(k)); if (o && Date.now() - o.t < maxAge) return o; } catch { } return null; }
 function cacheSet(k, data) { try { localStorage.setItem(k, JSON.stringify({ t: Date.now(), data })); } catch { } }
@@ -130,16 +132,64 @@ function loadHeroes(force = false) {
   return heroesPromise;
 }
 
+let ITEM_BY_KEY = {};
 async function loadItems() {
   if (ITEMS) return ITEMS;
-  const c = cacheGet('d2h_items', 7 * 864e5);
-  if (c) return (ITEMS = c.data);
-  const r = await fetch(API + '/constants/items');
-  const d = await r.json();
-  const map = {};
-  Object.entries(d).forEach(([key, it]) => { if (it && it.id != null) map[it.id] = { key, n: it.dname || key, img: it.img, cost: it.cost || 0 }; });
-  cacheSet('d2h_items', map);
-  return (ITEMS = map);
+  const c = cacheGet('d2h_items2', 7 * 864e5);
+  if (c) ITEMS = c.data;
+  else {
+    const r = await fetch(API + '/constants/items');
+    const d = await r.json();
+    const map = {};
+    Object.entries(d).forEach(([key, it]) => { if (it && it.id != null) map[it.id] = { key, n: it.dname || key, img: it.img, cost: it.cost || 0, tier: it.tier || 0 }; });
+    cacheSet('d2h_items2', map);
+    ITEMS = map;
+  }
+  ITEM_BY_KEY = {};
+  Object.values(ITEMS).forEach(it => { ITEM_BY_KEY[it.key] = it; });
+  return ITEMS;
+}
+
+/* Способности и таланты героя (OpenDota constants) */
+// В OpenDota у части талантов нет чисел ("+{s:value} Radius") — показываем направление стрелкой
+function cleanTalent(d) {
+  if (!/\{s:/.test(d)) return d;
+  const neg = /^\s*-/.test(d);
+  const rest = d.replace(/\{s:[^}]+\}[%sx]?/g, '').replace(/^[\s+\-x\/%]+/, '').replace(/\s{2,}/g, ' ').trim();
+  return (neg ? '↓ ' : '↑ ') + rest;
+}
+let ABIL_SRC = null;
+async function loadHeroAbilities(h) {
+  const k = 'd2h_abil2_' + h.id;
+  const c = cacheGet(k, 3 * 864e5);
+  if (c) return c.data;
+  if (!ABIL_SRC) {
+    ABIL_SRC = Promise.all([
+      fetch(API + '/constants/hero_abilities').then(r => r.json()),
+      fetch(API + '/constants/abilities').then(r => r.json()),
+    ]).catch(e => { ABIL_SRC = null; throw e; });
+  }
+  const [ha, ab] = await ABIL_SRC;
+  const e = ha[h.name];
+  if (!e) throw new Error('no abilities');
+  const list = [];
+  (e.abilities || []).forEach((n, slot) => {
+    const a = ab[n];
+    if (!a || !a.dname || n === 'generic_hidden') return;
+    const beh = [].concat(a.behavior || []);
+    if (beh.includes('Hidden') || beh.includes('Not Learnable')) return;
+    list.push({ key: n, dname: a.dname, img: a.img || '', innate: !!a.is_innate, desc: String(a.desc || '').slice(0, 260), slot });
+  });
+  const learn = list.filter(a => !a.innate);
+  const ult = learn.find(a => a.slot === 5) || learn[learn.length - 1];
+  learn.forEach(a => { a.ult = a === ult; });
+  const talents = (e.talents || []).map(t => ({
+    key: t.name, tier: t.level,
+    dname: cleanTalent(String(ab[t.name]?.dname || t.name)),
+  }));
+  const data = { abilities: learn, innate: list.filter(a => a.innate), talents };
+  cacheSet(k, data);
+  return data;
 }
 
 async function loadItemPop(id) {
@@ -228,6 +278,8 @@ function fieldHtml(f) {
 }
 function openModal(title, fields, onSubmit, submitText = 'Сохранить') {
   $('#modalTitle').textContent = title;
+  $('.modal').classList.remove('wide');
+  modalOnClose = null;
   const form = $('#modalForm');
   form.innerHTML = `<div class="form-grid">${fields.map(fieldHtml).join('')}</div>
     <div class="modal-foot"><button type="button" class="btn btn-ghost" data-close>Отмена</button><button class="btn btn-primary">${esc(submitText)}</button></div>`;
@@ -239,7 +291,27 @@ function openModal(title, fields, onSubmit, submitText = 'Сохранить') {
   $('#modal').hidden = false;
   setTimeout(() => { const first = $('input:not([type=radio]),textarea,select', form); first && first.focus(); }, 30);
 }
-function closeModal() { $('#modal').hidden = true; }
+let modalOnClose = null;
+function closeModal() {
+  $('#modal').hidden = true;
+  const f = modalOnClose; modalOnClose = null; f && f();
+}
+// Своё окно подтверждения (стандартный confirm() блокируется в режиме приложения)
+function askConfirm(text, yes = 'Удалить') {
+  return new Promise(resolve => {
+    let done = false;
+    const finish = v => { if (!done) { done = true; resolve(v); } };
+    $('#modalTitle').textContent = 'Подтверждение';
+    $('.modal').classList.remove('wide');
+    const form = $('#modalForm');
+    form.innerHTML = `<p style="margin:0;font-size:15px">${esc(text)}</p>
+      <div class="modal-foot"><button type="button" class="btn btn-ghost" data-close>Отмена</button><button class="btn btn-primary" id="cfYes">${esc(yes)}</button></div>`;
+    form.onsubmit = e => { e.preventDefault(); finish(true); closeModal(); };
+    modalOnClose = () => finish(false);
+    $('#modal').hidden = false;
+    setTimeout(() => $('#cfYes')?.focus(), 30);
+  });
+}
 document.addEventListener('click', e => { if (e.target.closest('[data-close]') || e.target.id === 'modal') closeModal(); });
 document.addEventListener('keydown', e => { if (e.key === 'Escape') closeModal(); });
 
@@ -310,7 +382,8 @@ function renderNav(active) {
 }
 let CURRENT = null;
 function route() {
-  const [name, param] = (location.hash.replace(/^#\/?/, '') || 'dashboard').split('/');
+  const parts = (location.hash.replace(/^#\/?/, '') || 'dashboard').split('/');
+  const name = parts[0], param = parts.slice(1);
   const v = VIEWS[name] ? name : 'dashboard';
   CURRENT = { name: v, param };
   renderNav(v);
@@ -477,6 +550,7 @@ function renderMeta(el) {
 function drawMetaList() {
   const box = $('#mList'); if (!box) return;
   let rows = bracketStats(db.bracket);
+  if (!rows.some(r => r.picks > 0)) { box.innerHTML = '<div class="empty"><div class="big">📭</div>OpenDota сейчас не отдаёт статистику по этому рангу. Выбери соседний ранг.</div>'; return; }
   const q = metaUI.q.trim().toLowerCase();
   rows = rows.filter(r => (!metaUI.role || r.h.roles.includes(metaUI.role)) && (!metaUI.attr || r.h.primary_attr === metaUI.attr) && (!q || r.h.localized_name.toLowerCase().includes(q)));
   const isPro = db.bracket === 'pro';
@@ -517,8 +591,15 @@ function drawMetaList() {
    БИЛДЫ
    ============================================================ */
 let buildsQ = '';
-function renderBuilds(el, id) {
-  withHeroes(el, () => id && HERO[id] ? renderHeroPage(el, HERO[id]) : renderHeroPicker(el));
+function renderBuilds(el, p = []) {
+  const [id, mode, bid] = p;
+  withHeroes(el, () => {
+    const h = HERO[id];
+    if (!h) { draft = null; return renderHeroPicker(el); }
+    if (mode === 'edit') return renderBuildEditor(el, h, bid);
+    draft = null;
+    renderHeroPage(el, h);
+  });
 }
 function renderHeroPicker(el) {
   const myIds = Object.keys(db.builds).filter(k => db.builds[k] && db.builds[k].length);
@@ -553,7 +634,7 @@ function renderHeroPage(el, h) {
   const bName = BRACKETS.find(b => b.v === db.bracket)?.n;
   $('#pageTitle').textContent = h.localized_name;
   $('#crumb').textContent = 'Билды героев · ' + ATTRS[h.primary_attr];
-  setActions(`<a class="btn btn-ghost" href="#/builds">${ic('back')}Все герои</a><button class="btn btn-primary" id="hNew">${ic('plus')}Мой билд</button>`);
+  setActions(`<a class="btn btn-ghost" href="#/builds">${ic('back')}Все герои</a><button class="btn btn-primary" id="hNew">${ic('plus')}Новое руководство</button>`);
 
   el.innerHTML = `
   <div class="stack">
@@ -575,23 +656,22 @@ function renderHeroPage(el, h) {
       </div>
     </div>
 
+    <div class="grid g2" id="hMatchups">
+      <div class="card mu good"><div class="card-head"><div><h3>💪 Силён против</h3><div class="sub">Топ-5 героев, против которых ${esc(h.localized_name)} чаще побеждает</div></div></div><div class="mu-list"><div class="spinner" style="margin:16px auto"></div></div></div>
+      <div class="card mu bad"><div class="card-head"><div><h3>⚠️ Слаб против</h3><div class="sub">Топ-5 героев, против которых ${esc(h.localized_name)} чаще проигрывает</div></div></div><div class="mu-list"><div class="spinner" style="margin:16px auto"></div></div></div>
+    </div>
+
     <div class="card">
       <div class="card-head"><div><h3>Популярные предметы</h3><div class="sub">Что чаще всего покупают на ${esc(h.localized_name)} в публичных матчах (OpenDota)</div></div></div>
       <div id="hItems"><div class="spinner" style="margin:20px auto"></div></div>
     </div>
 
-    <div class="grid g-main">
-      <div class="card">
-        <div class="card-head"><div><h3>Мои билды</h3><div class="sub">Свои сборки, прокачка и заметки по герою</div></div></div>
-        <div class="list">${builds.map(b => `
-          <div class="build-card" data-bid="${b.id}">
-            <div class="row"><h4>${esc(b.title)}</h4>${b.pos ? `<span class="tag">${esc(b.pos)}</span>` : ''}<span class="spacer"></span>
-              <button class="icon-btn" data-edit title="Редактировать">${ic('edit')}</button><button class="icon-btn danger" data-del title="Удалить">${ic('trash')}</button></div>
-            ${b.items ? `<div class="lbl">Предметы</div><pre>${esc(b.items)}</pre>` : ''}
-            ${b.skills ? `<div class="lbl">Прокачка / таланты</div><pre>${esc(b.skills)}</pre>` : ''}
-            ${b.note ? `<div class="lbl">Заметки / матчапы</div><pre>${esc(b.note)}</pre>` : ''}
-          </div>`).join('') || `<div class="empty"><div class="big">🛠️</div>Сохрани свой первый билд на ${esc(h.localized_name)}</div>`}</div>
-      </div>
+    <div class="card">
+      <div class="card-head"><div><h3>Мои руководства</h3><div class="sub">Свои сборки</div></div><button class="btn btn-ghost btn-sm" id="hNew2">${ic('plus')}Новое руководство</button></div>
+      <div class="list" id="hBuilds"></div>
+    </div>
+
+    <div class="grid">
       <div class="card">
         <div class="card-head"><h3>Наблюдения по герою</h3><button class="btn btn-ghost btn-sm" id="hNote">${ic('plus')}Запись</button></div>
         <div class="list">${heroNotes.map(n => { const c = NOTE_CATS[n.cat] || NOTE_CATS.other; return `<div class="session" style="border-left:3px solid ${c.c}"><div class="body"><span class="cat" style="--c:${c.c}">${c.n}</span> <span class="dim" style="font-size:12px">· ${fmtDate(n.date)}</span><br><b>${esc(n.title)}</b><div class="meta" style="white-space:pre-wrap">${esc(n.text).slice(0, 220)}</div></div></div>`; }).join('') || '<div class="muted">Нет записей. Добавь, что понял про героя.</div>'}</div>
@@ -599,13 +679,15 @@ function renderHeroPage(el, h) {
     </div>
   </div>`;
 
-  $('#hNew').onclick = () => openBuildModal(h);
-  $('#hNote').onclick = () => openNoteModal({ hero: h.localized_name });
-  $$('[data-bid]', el).forEach(c => {
-    const b = builds.find(x => x.id === c.dataset.bid);
-    $('[data-edit]', c).onclick = () => openBuildModal(h, b);
-    $('[data-del]', c).onclick = () => { if (confirm('Удалить билд «' + b.title + '»?')) { db.builds[h.id] = builds.filter(x => x !== b); save(); rerender(); } };
+  loadMatchups(h.id).then(list => drawMatchups(h, list)).catch(() => {
+    $$('#hMatchups .mu-list').forEach(b => { b.innerHTML = '<div class="muted">Не удалось загрузить матчапы OpenDota.</div>'; });
   });
+
+  const goNew = () => { location.hash = `#/builds/${h.id}/edit/new`; };
+  $('#hNew').onclick = goNew; $('#hNew2').onclick = goNew;
+  $('#hNote').onclick = () => openNoteModal({ hero: h.localized_name });
+  drawBuildCards(h, null);
+  Promise.all([loadItems(), loadHeroAbilities(h).catch(() => null)]).then(([, abil]) => drawBuildCards(h, abil)).catch(() => { });
 
   Promise.all([loadItems(), loadItemPop(h.id)]).then(([items, pop]) => {
     const box = $('#hItems'); if (!box) return;
@@ -619,17 +701,356 @@ function renderHeroPage(el, h) {
   }).catch(() => { const box = $('#hItems'); if (box) box.innerHTML = '<div class="muted">Не удалось загрузить предметы OpenDota.</div>'; });
 }
 
-function openBuildModal(h, b = {}) {
-  openModal(b.id ? 'Редактировать билд' : `Новый билд — ${h.localized_name}`, [
-    { name: 'title', label: 'Название', value: b.title || '', ph: 'Например: Агрессивный мид через Блинк', required: true },
-    { name: 'pos', label: 'Позиция', type: 'select', value: b.pos || '', options: [['', '—'], ...POS.map(p => [p, p])] },
-    { name: 'items', label: 'Порядок предметов', type: 'textarea', full: true, value: b.items || '', ph: 'Старт: Tango, Branch x2…\nКор: Boots → Blink → BKB…\nСитуативно: …' },
-    { name: 'skills', label: 'Прокачка способностей и таланты', type: 'textarea', full: true, rows: 3, value: b.skills || '', ph: 'Q-W-Q-E-Q-R… · 10 lvl: +… · 15 lvl: …' },
-    { name: 'note', label: 'Заметки, матчапы, тайминги', type: 'textarea', full: true, rows: 3, value: b.note || '', ph: 'Против кого хорош / плох, ключевые тайминги…' },
-  ], d => {
-    const list = db.builds[h.id] = db.builds[h.id] || [];
-    if (b.id) Object.assign(b, d); else list.unshift({ id: uid(), date: today(), ...d });
-    save(); toast('Билд сохранён'); rerender();
+/* ---------- матчапы: против кого герой силён / слаб ---------- */
+async function loadMatchups(id) {
+  const k = 'd2h_mu_' + id;
+  const c = cacheGet(k, 12 * 36e5);
+  if (c) return c.data;
+  const r = await fetch(`${API}/heroes/${id}/matchups`);
+  if (!r.ok) throw new Error(r.status);
+  const d = await r.json();
+  cacheSet(k, d);
+  return d;
+}
+function drawMatchups(h, raw) {
+  const box = $('#hMatchups'); if (!box) return;
+  const MIN_GAMES = 10, K = 20; // отсекаем малые выборки и сглаживаем винрейт к 50%
+  const rows = raw.filter(m => HERO[m.hero_id] && m.games_played >= MIN_GAMES).map(m => ({
+    h: HERO[m.hero_id], games: m.games_played, wr: m.wins / m.games_played * 100,
+    score: (m.wins + K * 0.5) / (m.games_played + K) * 100,
+  }));
+  const good = rows.filter(r => r.wr > 50).sort((a, b) => b.score - a.score).slice(0, 5);
+  const bad = rows.filter(r => r.wr < 50).sort((a, b) => a.score - b.score).slice(0, 5);
+  const total = raw.reduce((a, m) => a + m.games_played, 0);
+  const row = (r, cls) => `
+    <a class="mu-row" href="#/builds/${r.h.id}" title="Открыть ${esc(r.h.localized_name)}">
+      <img src="${heroImg(r.h)}" alt="" loading="lazy">
+      <div class="mu-body"><b>${esc(r.h.localized_name)}</b><div class="bar"><i class="${cls}" style="width:${Math.min(100, Math.abs(r.wr - 50) * 4)}%"></i></div></div>
+      <div class="mu-wr"><b class="${cls === 'g' ? 'pos' : 'neg'}">${pct(r.wr, 0)}</b><span>${r.games} ${plural(r.games, 'игра', 'игры', 'игр')}</span></div>
+    </a>`;
+  const empty = '<div class="muted">Недостаточно данных по этому герою.</div>';
+  $('.good .mu-list', box).innerHTML = good.map(r => row(r, 'g')).join('') || empty;
+  $('.bad .mu-list', box).innerHTML = bad.map(r => row(r, 'b')).join('') || empty;
+  $$('.mu .sub', box).forEach(s => { if (!s.dataset.n) { s.dataset.n = 1; s.insertAdjacentHTML('beforeend', ` · матчи высокого уровня (OpenDota), ${total.toLocaleString('ru-RU')} игр`); } });
+}
+
+/* ============================================================
+   РУКОВОДСТВА (билды как в Dota): группы предметов, прокачка, таланты
+   ============================================================ */
+const DEFAULT_GROUPS = ['Стартовые предметы', 'Ранняя игра', 'Мид-гейм', 'Поздняя игра', 'Ситуативные'];
+const MAX_LVL = 18, NO_POINT = new Set([17]), TALENT_LV = [10, 15, 20, 25];
+const ITEM_SKIP = /^(recipe_|aegis$|cheese$|royale_with_cheese$|refresher_shard$|ultimate_scepter_roshan$|aghanims_shard_roshan$|ultimate_scepter_2$|winters_curse|mutation_|seer_stone|river_painter|famango|great_famango|greater_famango|banana$|tango_single$|courier$|flying_courier$|stout_shield$|pocket_roshan$|necronomicon|trident$|diffusal_blade_2$)/;
+let draft = null;
+
+const itemImg = k => { const it = ITEM_BY_KEY[k]; return it ? CDN + it.img : ''; };
+const itemName = k => ITEM_BY_KEY[k]?.n || k;
+
+function normalizeBuild(b) {
+  if (!b.groups) {
+    const legacy = [b.items && 'Предметы: ' + b.items, b.skills && 'Прокачка: ' + b.skills, b.note].filter(Boolean).join('\n\n');
+    b.groups = DEFAULT_GROUPS.map(n => ({ id: uid(), name: n, items: [] }));
+    b.note = legacy; delete b.items;
+    b.skills = [];
+  }
+  if (!Array.isArray(b.skills)) b.skills = [];
+  b.skills = Array.from({ length: MAX_LVL }, (_, i) => b.skills[i] || null);
+  b.talents = b.talents || {};
+  return b;
+}
+
+function skillCheck(seq, abil) {
+  const cnt = {};
+  for (let L = 1; L <= MAX_LVL; L++) {
+    const k = seq[L - 1]; if (!k) continue;
+    if (NO_POINT.has(L)) return `На ${L} уровне нет очка способностей`;
+    const r = (cnt[k] = (cnt[k] || 0) + 1);
+    if (k === 'T') {
+      if (r > 2) return 'До 18 уровня можно взять только 2 таланта';
+      if (L < TALENT_LV[r - 1]) return `${r}-й талант можно взять с ${TALENT_LV[r - 1]} уровня`;
+      continue;
+    }
+    const a = abil.abilities.find(x => x.key === k); if (!a) continue;
+    if (a.ult) {
+      if (r > 3) return `${a.dname}: максимум 3 уровня`;
+      if (L < r * 6) return `${a.dname} (${r} ур.) доступен с ${r * 6} уровня героя`;
+    } else {
+      if (r > 4) return `${a.dname}: максимум 4 уровня`;
+      if (L < 2 * r - 1) return `${a.dname} (${r} ур.) доступен с ${2 * r - 1} уровня героя`;
+    }
+  }
+  return null;
+}
+
+/* ---------- отображение готового руководства ---------- */
+function drawBuildCards(h, abil) {
+  const box = $('#hBuilds'); if (!box) return;
+  const builds = db.builds[h.id] || [];
+  if (!builds.length) { box.innerHTML = `<div class="empty"><div class="big">🛠️</div>Создай своё первое руководство на ${esc(h.localized_name)}: предметы по стадиям игры, порядок прокачки и таланты.</div>`; return; }
+  const abilByKey = {}; (abil?.abilities || []).forEach(a => { abilByKey[a.key] = a; });
+  box.innerHTML = builds.map(b => {
+    let body = '';
+    if (b.groups) {
+      body += b.groups.filter(g => g.items.length).map(g => {
+        const cost = g.items.reduce((a, k) => a + (ITEM_BY_KEY[k]?.cost || 0), 0);
+        return `<div class="lbl">${esc(g.name)}${cost ? ` <span class="gold-cost">${cost.toLocaleString('ru-RU')}</span>` : ''}</div>
+          <div class="iline">${g.items.map(k => itemImg(k) ? `<img src="${itemImg(k)}" alt="" title="${esc(itemName(k))}" loading="lazy">` : `<span class="tag">${esc(itemName(k))}</span>`).join('')}</div>`;
+      }).join('');
+      const skills = b.skills || [];
+      if (skills.some(Boolean)) {
+        body += `<div class="lbl">Порядок прокачки</div><div class="sline">${skills.map((k, i) => {
+          const L = i + 1; if (NO_POINT.has(L) && !k) return '';
+          let face = '<i class="ph"></i>';
+          if (k === 'T') face = '<i class="tt">T</i>';
+          else if (k) { const a = abilByKey[k]; face = a?.img ? `<img src="${CDN + a.img}" alt="" title="${esc(a.dname)}">` : `<i class="ph" title="${esc(k)}"></i>`; }
+          return `<div class="sl">${face}<span>${L}</span></div>`;
+        }).join('')}</div>`;
+      }
+      const tal = Object.entries(b.talents || {}).filter(([, v]) => v).sort((a, b2) => b2[0] - a[0]);
+      if (tal.length) {
+        const tn = k => abil?.talents.find(t => t.key === k)?.dname || k;
+        body += `<div class="lbl">Таланты</div><div class="tlist">${tal.map(([lv, k]) => `<div><b>${lv}</b>${esc(tn(k))}</div>`).join('')}</div>`;
+      }
+      if (b.note) body += `<div class="lbl">Заметки / матчапы</div><pre>${esc(b.note)}</pre>`;
+    } else {
+      body += `${b.items ? `<div class="lbl">Предметы</div><pre>${esc(b.items)}</pre>` : ''}${b.skills ? `<div class="lbl">Прокачка / таланты</div><pre>${esc(b.skills)}</pre>` : ''}${b.note ? `<div class="lbl">Заметки / матчапы</div><pre>${esc(b.note)}</pre>` : ''}`;
+    }
+    return `<div class="build-card" data-bid="${b.id}">
+      <div class="row"><h4>${esc(b.title)}</h4>${b.pos ? `<span class="tag">${esc(b.pos)}</span>` : ''}<span class="spacer"></span>
+        <button class="icon-btn" data-edit title="Редактировать">${ic('edit')}</button><button class="icon-btn danger" data-del title="Удалить">${ic('trash')}</button></div>
+      ${body}</div>`;
+  }).join('');
+  $$('[data-bid]', box).forEach(c => {
+    const b = builds.find(x => x.id === c.dataset.bid);
+    $('[data-edit]', c).onclick = () => { location.hash = `#/builds/${h.id}/edit/${b.id}`; };
+    $('[data-del]', c).onclick = async () => { if (await askConfirm('Удалить руководство «' + b.title + '»?')) { db.builds[h.id] = builds.filter(x => x !== b); save(); rerender(); } };
+  });
+}
+
+/* ---------- редактор ---------- */
+async function renderBuildEditor(el, h, bid) {
+  const list = db.builds[h.id] || [];
+  const src = bid && bid !== 'new' ? list.find(b => b.id === bid) : null;
+  const key = h.id + '/' + (src ? src.id : 'new');
+  if (!draft || draft._key !== key) {
+    draft = src ? normalizeBuild(JSON.parse(JSON.stringify(src))) : normalizeBuild({ title: '', pos: '', groups: DEFAULT_GROUPS.map(n => ({ id: uid(), name: n, items: [] })), skills: [], talents: {}, note: '' });
+    draft._key = key;
+  }
+  $('#pageTitle').textContent = src ? 'Редактирование руководства' : 'Новое руководство';
+  $('#crumb').textContent = 'Билды героев · ' + h.localized_name;
+  setActions(`<a class="btn btn-ghost" href="#/builds/${h.id}">Отмена</a><button class="btn btn-primary" id="eSave">Сохранить руководство</button>`);
+  $('#eSave').onclick = () => saveDraft(h, src);
+
+  loadingView(el, 'Загружаю предметы и способности…');
+  let abil = null;
+  try { [, abil] = await Promise.all([loadItems(), loadHeroAbilities(h).catch(() => null)]); }
+  catch { return offlineView(el, () => renderBuildEditor(el, h, bid)); }
+  if (!draft || draft._key !== key || !location.hash.includes('/edit/')) return;
+
+  el.innerHTML = `
+  <div class="stack">
+    <div class="card ed-head">
+      <img src="${heroImg(h)}" alt="">
+      <div class="form-grid" style="flex:1">
+        <div class="field"><label>Название руководства</label><input class="input" id="eTitle" value="${esc(draft.title)}" placeholder="Например: Быстрый Battle Fury фарм" maxlength="60"></div>
+        <div class="field"><label>Позиция</label><select class="input" id="ePos"><option value="">—</option>${POS.map(p => `<option ${draft.pos === p ? 'selected' : ''}>${p}</option>`).join('')}</select></div>
+      </div>
+    </div>
+
+    <div class="card">
+      <div class="card-head"><div><h3>Предметы</h3><div class="sub">Нажми «+», чтобы добавить предмет. Перетаскивай иконки, чтобы менять порядок или переносить между группами. Название группы можно изменить, кликнув по нему.</div></div>
+        <button class="btn btn-ghost btn-sm" id="eAddGroup">${ic('plus')}Группа</button></div>
+      <div id="eGroups"></div>
+    </div>
+
+    <div class="card">
+      <div class="card-head"><div><h3>Порядок прокачки</h3><div class="sub" id="eSkillSub"></div></div>
+        <button class="btn btn-ghost btn-sm" id="eSkillReset">Сбросить</button></div>
+      <div id="eSkills"></div>
+    </div>
+
+    <div class="card">
+      <div class="card-head"><div><h3>Таланты</h3><div class="sub">Выбери по одному таланту на каждом уровне</div></div></div>
+      <div id="eTalents"></div>
+    </div>
+
+    <div class="card">
+      <div class="field"><label>Заметки, матчапы, тайминги</label><textarea class="input" id="eNote" rows="4" placeholder="Против кого хорош / плох, когда что покупать, ключевые тайминги…">${esc(draft.note || '')}</textarea></div>
+    </div>
+  </div>`;
+
+  $('#eTitle').oninput = e => { draft.title = e.target.value; };
+  $('#ePos').onchange = e => { draft.pos = e.target.value; };
+  $('#eNote').oninput = e => { draft.note = e.target.value; };
+  $('#eAddGroup').onclick = () => { draft.groups.push({ id: uid(), name: 'Новая группа', items: [] }); drawGroups(h); const inp = $$('#eGroups [data-gname]').pop(); inp && (inp.focus(), inp.select()); };
+  drawGroups(h);
+  if (abil && abil.abilities.length) {
+    $('#eSkillReset').onclick = () => { draft.skills = Array(MAX_LVL).fill(null); drawSkills(abil); };
+    drawSkills(abil); drawTalents(abil);
+  } else {
+    $('#eSkills').innerHTML = '<div class="muted">Не удалось загрузить способности героя из OpenDota. Попробуй позже.</div>';
+    $('#eTalents').innerHTML = ''; $('#eSkillReset').hidden = true;
+  }
+}
+
+function saveDraft(h, src) {
+  const t = $('#eTitle'); if (t) draft.title = t.value;
+  if (!draft.title.trim()) { toast('Дай руководству название'); t && t.focus(); return; }
+  const data = JSON.parse(JSON.stringify(draft)); delete data._key;
+  data.title = data.title.trim();
+  const list = db.builds[h.id] = db.builds[h.id] || [];
+  if (src) Object.keys(src).forEach(k => delete src[k]), Object.assign(src, data);
+  else list.unshift({ ...data, id: uid(), date: today() });
+  save(); draft = null; toast('Руководство сохранено ✓');
+  location.hash = '#/builds/' + h.id;
+}
+
+let dragSrc = null;
+function drawGroups(h) {
+  const box = $('#eGroups'); if (!box) return;
+  box.innerHTML = draft.groups.map((g, gi) => {
+    const cost = g.items.reduce((a, k) => a + (ITEM_BY_KEY[k]?.cost || 0), 0);
+    return `<div class="igroup" data-gi="${gi}">
+      <div class="igroup-head">
+        <input class="gname" data-gname value="${esc(g.name)}" maxlength="40" title="Нажми, чтобы переименовать">
+        ${cost ? `<span class="gold-cost">${cost.toLocaleString('ru-RU')}</span>` : ''}
+        <span class="spacer"></span>
+        <button class="icon-btn" data-up title="Выше" ${gi === 0 ? 'disabled' : ''}>↑</button>
+        <button class="icon-btn" data-down title="Ниже" ${gi === draft.groups.length - 1 ? 'disabled' : ''}>↓</button>
+        <button class="icon-btn danger" data-delg title="Удалить группу">${ic('trash')}</button>
+      </div>
+      <div class="islots" data-drop="${gi}">
+        ${g.items.map((k, ii) => `<div class="islot" draggable="true" data-ii="${ii}" title="${esc(itemName(k))} · ${ITEM_BY_KEY[k]?.cost || 0} золота">${itemImg(k) ? `<img src="${itemImg(k)}" alt="">` : `<small>${esc(itemName(k))}</small>`}<button class="rm" data-rm title="Убрать">×</button></div>`).join('')}
+        <button class="islot add" data-add title="Добавить предмет">+</button>
+      </div>
+    </div>`;
+  }).join('') || '<div class="muted">Нет групп. Нажми «Группа», чтобы добавить.</div>';
+
+  $$('.igroup', box).forEach(gEl => {
+    const gi = +gEl.dataset.gi, g = draft.groups[gi];
+    $('[data-gname]', gEl).oninput = e => { g.name = e.target.value; };
+    $('[data-gname]', gEl).onblur = e => { if (!e.target.value.trim()) { g.name = 'Без названия'; e.target.value = g.name; } };
+    $('[data-up]', gEl).onclick = () => { draft.groups.splice(gi - 1, 0, draft.groups.splice(gi, 1)[0]); drawGroups(h); };
+    $('[data-down]', gEl).onclick = () => { draft.groups.splice(gi + 1, 0, draft.groups.splice(gi, 1)[0]); drawGroups(h); };
+    $('[data-delg]', gEl).onclick = async () => { if (!g.items.length || await askConfirm(`Удалить группу «${g.name}» вместе с предметами?`)) { draft.groups.splice(gi, 1); drawGroups(h); } };
+    $('[data-add]', gEl).onclick = () => openItemPicker(h, gi);
+    $$('.islot[data-ii]', gEl).forEach(s => {
+      const ii = +s.dataset.ii;
+      $('[data-rm]', s).onclick = e => { e.stopPropagation(); g.items.splice(ii, 1); drawGroups(h); };
+      s.ondragstart = e => { dragSrc = { gi, ii }; s.classList.add('dragging'); e.dataTransfer.effectAllowed = 'move'; e.dataTransfer.setData('text/plain', ''); };
+      s.ondragend = () => { s.classList.remove('dragging'); $$('.islots.over').forEach(x => x.classList.remove('over')); };
+    });
+    const zone = $('.islots', gEl);
+    zone.ondragover = e => { if (!dragSrc) return; e.preventDefault(); zone.classList.add('over'); };
+    zone.ondragleave = e => { if (!zone.contains(e.relatedTarget)) zone.classList.remove('over'); };
+    zone.ondrop = e => {
+      e.preventDefault(); zone.classList.remove('over');
+      if (!dragSrc) return;
+      const from = draft.groups[dragSrc.gi];
+      const target = e.target.closest('.islot[data-ii]');
+      let to = target ? +target.dataset.ii : g.items.length;
+      const [k] = from.items.splice(dragSrc.ii, 1);
+      if (from === g && dragSrc.ii < to) to--;
+      g.items.splice(Math.max(0, to), 0, k);
+      dragSrc = null; drawGroups(h);
+    };
+  });
+}
+
+function openItemPicker(h, gi) {
+  let tab = 'pop', q = '';
+  const g = draft.groups[gi];
+  $('#modalTitle').textContent = 'Добавить в «' + g.name + '»';
+  $('.modal').classList.add('wide');
+  modalOnClose = null;
+  const form = $('#modalForm');
+  form.onsubmit = e => e.preventDefault();
+  form.innerHTML = `
+    <div class="row">
+      <label class="search">${ic('search')}<input class="input" id="pQ" placeholder="Поиск предмета (англ. название)…" autocomplete="off"></label>
+      <div class="seg" id="pTabs"><button type="button" data-t="pop" class="on">Популярные на герое</button><button type="button" data-t="all">Все предметы</button><button type="button" data-t="neutral">Нейтральные</button></div>
+    </div>
+    <div class="pgrid" id="pGrid"><div class="spinner" style="margin:30px auto;grid-column:1/-1"></div></div>
+    <div class="modal-foot"><span class="muted" id="pCount" style="margin-right:auto;align-self:center"></span><button type="button" class="btn btn-primary" data-close>Готово</button></div>`;
+  $('#modal').hidden = false;
+
+  const all = Object.values(ITEMS).filter(it => it.img && !ITEM_SKIP.test(it.key) && !/recipe/i.test(it.n) && (it.cost > 0 || it.tier || /ward/.test(it.key)));
+  const base = all.filter(it => !it.tier).sort((a, b) => a.cost - b.cost || a.n.localeCompare(b.n));
+  const neutral = all.filter(it => it.tier).sort((a, b) => a.tier - b.tier || a.n.localeCompare(b.n));
+  let pop = null;
+  loadItemPop(h.id).then(p => {
+    const seen = new Set(); pop = [];
+    ['start_game_items', 'early_game_items', 'mid_game_items', 'late_game_items'].forEach(ph => {
+      Object.entries(p[ph] || {}).sort((a, b) => b[1] - a[1]).forEach(([id]) => { const it = ITEMS[id]; if (it && !seen.has(it.key) && !ITEM_SKIP.test(it.key)) { seen.add(it.key); pop.push(it); } });
+    });
+    draw();
+  }).catch(() => { pop = []; draw(); });
+
+  const updCount = () => { $('#pCount').textContent = `В группе: ${g.items.length}`; };
+  function draw() {
+    const grid = $('#pGrid'); if (!grid) return;
+    const s = q.trim().toLowerCase();
+    let list = s ? [...base, ...neutral].filter(it => it.n.toLowerCase().includes(s) || it.key.includes(s.replace(/\s+/g, '_')))
+      : tab === 'pop' ? pop : tab === 'neutral' ? neutral : base;
+    if (list === null) { grid.innerHTML = '<div class="spinner" style="margin:30px auto;grid-column:1/-1"></div>'; return; }
+    grid.innerHTML = list.map(it => `<button type="button" class="pitem" data-k="${esc(it.key)}" title="${esc(it.n)}"><img src="${CDN + it.img}" alt="" loading="lazy"><span>${esc(it.n)}</span><em>${it.tier ? 'Тир ' + it.tier : it.cost ? it.cost : 'бесплатно'}</em></button>`).join('')
+      || '<div class="muted" style="grid-column:1/-1;padding:20px;text-align:center">Ничего не найдено</div>';
+    $$('.pitem', grid).forEach(b => b.onclick = () => {
+      g.items.push(b.dataset.k); drawGroups(h); updCount();
+      b.classList.remove('added'); void b.offsetWidth; b.classList.add('added');
+    });
+    updCount();
+  }
+  $('#pQ').oninput = e => { q = e.target.value; draw(); };
+  $$('#pTabs button').forEach(b => b.onclick = () => { tab = b.dataset.t; q = ''; $('#pQ').value = ''; $$('#pTabs button').forEach(x => x.classList.toggle('on', x === b)); draw(); });
+  draw();
+  setTimeout(() => $('#pQ')?.focus(), 30);
+}
+
+function drawSkills(abil) {
+  const box = $('#eSkills'); if (!box) return;
+  const used = draft.skills.filter(Boolean).length;
+  $('#eSkillSub').textContent = `Нажимай на клетку, чтобы выбрать, что качать на этом уровне · очков распределено: ${used} из 17`;
+  const rank = {};
+  const ranks = draft.skills.map(k => k ? (rank[k] = (rank[k] || 0) + 1) : 0);
+  const rows = [...abil.abilities.map(a => ({ key: a.key, a })), { key: 'T' }];
+  const lv = Array.from({ length: MAX_LVL }, (_, i) => i + 1);
+  box.innerHTML = `
+    ${abil.innate.length ? `<div class="innate">${abil.innate.map(a => `<span class="tag">${a.img ? `<img src="${CDN + a.img}" alt="" onerror="this.remove()">` : ''}Врождённая: <b>${esc(a.dname)}</b></span>`).join('')}</div>` : ''}
+    <div class="sgrid"><table>
+      <thead><tr><th></th>${lv.map(L => `<th class="${NO_POINT.has(L) ? 'dim2' : ''}">${L}</th>`).join('')}</tr></thead>
+      <tbody>${rows.map(r => `<tr>
+        <td><div class="sname">${r.a ? `${r.a.img ? `<img src="${CDN + r.a.img}" alt="" title="${esc(r.a.desc)}">` : ''}<span>${esc(r.a.dname)}${r.a.ult ? '<em class="ulttag">Ульта</em>' : ''}</span>` : '<i class="tico">T</i><span>Талант</span>'}</div></td>
+        ${lv.map(L => {
+          const on = draft.skills[L - 1] === r.key;
+          const lock = NO_POINT.has(L) || (r.key === 'T' && L < 10);
+          return `<td><button type="button" class="scell ${on ? 'on' : ''} ${r.key === 'T' ? 't' : ''} ${lock ? 'lock' : ''}" data-k="${esc(r.key)}" data-l="${L}" ${lock ? 'disabled' : ''}>${on ? ranks[L - 1] : ''}</button></td>`;
+        }).join('')}
+      </tr>`).join('')}</tbody>
+    </table></div>`;
+  $$('.scell:not(.lock)', box).forEach(c => c.onclick = () => {
+    const L = +c.dataset.l, k = c.dataset.k;
+    const next = draft.skills.slice();
+    next[L - 1] = next[L - 1] === k ? null : k;
+    const err = skillCheck(next, abil);
+    if (err) { toast(err); c.classList.add('shake'); setTimeout(() => c.classList.remove('shake'), 400); return; }
+    draft.skills = next; drawSkills(abil);
+  });
+}
+
+function drawTalents(abil) {
+  const box = $('#eTalents'); if (!box) return;
+  if (!abil.talents.length) { box.innerHTML = '<div class="muted">Нет данных о талантах.</div>'; return; }
+  box.innerHTML = `<div class="ttree">${[4, 3, 2, 1].map(tier => {
+    const lvl = TALENT_LV[tier - 1];
+    const opts = abil.talents.filter(t => t.tier === tier);
+    const [a, b] = [opts[0], opts[1]];
+    const btn = t => t ? `<button type="button" class="topt ${draft.talents[lvl] === t.key ? 'on' : ''}" data-lv="${lvl}" data-k="${esc(t.key)}">${esc(t.dname)}</button>` : '<span></span>';
+    return `<div class="trow">${btn(a)}<div class="tlv">${lvl}</div>${btn(b)}</div>`;
+  }).join('')}</div>`;
+  $$('.topt', box).forEach(b => b.onclick = () => {
+    const lv = b.dataset.lv, k = b.dataset.k;
+    draft.talents[lv] = draft.talents[lv] === k ? null : k;
+    drawTalents(abil);
   });
 }
 
@@ -733,7 +1154,7 @@ function renderMmr(el) {
   $$('tr[data-id]', el).forEach(tr => {
     const e = db.mmr.find(x => x.id === tr.dataset.id);
     $('[data-edit]', tr).onclick = () => openGameModal(e);
-    $('[data-del]', tr).onclick = () => { if (confirm('Удалить запись игры?')) { db.mmr = db.mmr.filter(x => x !== e); save(); rerender(); } };
+    $('[data-del]', tr).onclick = async () => { if (await askConfirm('Удалить запись игры?')) { db.mmr = db.mmr.filter(x => x !== e); save(); rerender(); } };
   });
 }
 
@@ -821,7 +1242,7 @@ function renderTraining(el) {
   $$('.session[data-id]', el).forEach(c => {
     const t = db.trainings.find(x => x.id === c.dataset.id);
     $('[data-edit]', c).onclick = () => openTrainModal(t);
-    $('[data-del]', c).onclick = () => { if (confirm('Удалить тренировку?')) { db.trainings = db.trainings.filter(x => x !== t); save(); rerender(); } };
+    $('[data-del]', c).onclick = async () => { if (await askConfirm('Удалить тренировку?')) { db.trainings = db.trainings.filter(x => x !== t); save(); rerender(); } };
   });
 }
 
@@ -870,7 +1291,7 @@ function renderNotes(el) {
       const n = db.notes.find(x => x.id === c.dataset.id);
       $('[data-pin]', c).onclick = () => { n.pinned = !n.pinned; save(); draw(); };
       $('[data-edit]', c).onclick = () => openNoteModal(n);
-      $('[data-del]', c).onclick = () => { if (confirm('Удалить запись?')) { db.notes = db.notes.filter(x => x !== n); save(); rerender(); } };
+      $('[data-del]', c).onclick = async () => { if (await askConfirm('Удалить запись?')) { db.notes = db.notes.filter(x => x !== n); save(); rerender(); } };
     });
   };
   $('#nAdd').onclick = () => openNoteModal();
@@ -906,7 +1327,7 @@ function renderGoals(el) {
   $$('.goal', el).forEach(c => {
     const g = db.goals.find(x => x.id === c.dataset.id);
     $('[data-t]', c).onclick = () => { g.done = !g.done; if (g.done) toast('Цель выполнена 🏆'); save(); rerender(); };
-    $('[data-del]', c).onclick = () => { if (confirm('Удалить цель?')) { db.goals = db.goals.filter(x => x !== g); save(); rerender(); } };
+    $('[data-del]', c).onclick = async () => { if (await askConfirm('Удалить цель?')) { db.goals = db.goals.filter(x => x !== g); save(); rerender(); } };
   });
 }
 
@@ -948,11 +1369,11 @@ function renderSettings(el) {
   };
   $('#sImport').onchange = e => {
     const f = e.target.files[0]; if (!f) return;
-    f.text().then(t => { const d = JSON.parse(t); if (!confirm('Заменить текущие данные данными из файла?')) return; db = Object.assign(defaults(), d); save(); toast('Данные импортированы'); rerender(); })
+    f.text().then(async t => { const d = JSON.parse(t); if (!await askConfirm('Заменить текущие данные данными из файла?', 'Заменить')) return; db = Object.assign(defaults(), d); if (db.bracket === '8') db.bracket = '7'; save(); toast('Данные импортированы'); rerender(); })
       .catch(() => toast('Файл не похож на резервную копию D2Helper'));
   };
   $('#sCache').onclick = () => { Object.keys(localStorage).filter(k => k.startsWith('d2h_')).forEach(k => localStorage.removeItem(k)); HEROES = null; ITEMS = null; toast('Кэш очищен'); loadHeroes(true); };
-  $('#sWipe').onclick = () => { if (confirm('Точно удалить ВСЕ записи дневника? Это нельзя отменить.') && confirm('Последнее подтверждение: удалить всё?')) { db = defaults(); save(); toast('Дневник очищен'); rerender(); } };
+  $('#sWipe').onclick = async () => { if (await askConfirm('Точно удалить ВСЕ записи дневника: игры, тренировки, наблюдения, руководства и цели? Это нельзя отменить.', 'Удалить всё')) { db = defaults(); save(); toast('Дневник очищен'); rerender(); } };
 }
 
 /* ---------- init ---------- */

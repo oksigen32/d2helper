@@ -1,5 +1,5 @@
 // D2Helper service worker: свежая версия из сети, при отсутствии интернета — из кэша
-const CACHE = 'd2helper-v1';
+const CACHE = 'd2helper-v2';
 const SHELL = ['./', './index.html', './styles.css', './app.js', './icon.png'];
 
 self.addEventListener('install', e => {
