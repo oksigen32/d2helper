@@ -1,4 +1,4 @@
-'use strict';
+﻿'use strict';
 /* ============================================================
    D2Helper — личный дневник игрока Dota 2
    Данные меты и билдов: OpenDota API (бесплатно, без ключа)
@@ -8,7 +8,7 @@
 const API = 'https://api.opendota.com/api';
 const CDN = 'https://cdn.cloudflare.steamstatic.com';
 const KEY = 'd2helper_db_v1';
-const VERSION = '1.3.0';
+const VERSION = '1.4.0';
 
 const BRACKETS = [
   { v: '1', n: 'Рекрут' }, { v: '2', n: 'Страж' }, { v: '3', n: 'Рыцарь' }, { v: '4', n: 'Герой' },
@@ -1369,9 +1369,98 @@ function openNoteModal(n = {}) {
     { name: 'tags', label: 'Теги через запятую', full: true, value: (n.tags || []).join(', '), ph: 'варды, тайминги, тильт' },
   ], d => {
     d.tags = d.tags.split(',').map(s => s.trim()).filter(Boolean);
+    const hasDraft = d.cat === 'draft' && [...dr.radiant, ...dr.dire].some(Boolean);
+    d.draft = hasDraft ? { radiant: dr.radiant.slice(), dire: dr.dire.slice() } : null;
     if (n.id) Object.assign(db.notes.find(x => x.id === n.id), d); else db.notes.push({ id: uid(), date: today(), pinned: false, ...d });
     save(); toast('Запись сохранена ✍️'); rerender();
   });
+
+  // ---- Полный драфт: Radiant / Dire по 5 героев ----
+  const dr = {
+    radiant: [0, 1, 2, 3, 4].map(i => n.draft?.radiant?.[i] || null),
+    dire: [0, 1, 2, 3, 4].map(i => n.draft?.dire?.[i] || null),
+  };
+  let active = { side: 'radiant', i: 0 }, dq = '';
+  const form = $('#modalForm');
+  const box = document.createElement('div');
+  box.className = 'field full draftbox';
+  box.innerHTML = `<label>Драфт</label>
+    <div class="dsides">
+      <div class="dside rad"><div class="dname">Radiant</div><div class="dslots" data-side="radiant"></div></div>
+      <div class="dvs">VS</div>
+      <div class="dside dire"><div class="dname">Dire</div><div class="dslots" data-side="dire"></div></div>
+    </div>
+    <div class="dpick">
+      <label class="search">${ic('search')}<input class="input" id="dQ" placeholder="Поиск героя…" autocomplete="off"></label>
+      <div class="dgrid" id="dGrid"><div class="spinner" style="margin:20px auto;grid-column:1/-1"></div></div>
+    </div>`;
+  $('.form-grid', form).appendChild(box);
+
+  const firstEmpty = () => {
+    for (const side of [active.side, active.side === 'radiant' ? 'dire' : 'radiant']) {
+      const i = dr[side].findIndex(x => !x); if (i >= 0) return { side, i };
+    }
+    return null;
+  };
+  function drawSlots() {
+    $$('.dslots', box).forEach(wrap => {
+      const side = wrap.dataset.side;
+      wrap.innerHTML = dr[side].map((id, i) => {
+        const h = id && HERO[id];
+        const on = active && active.side === side && active.i === i;
+        return `<button type="button" class="dslot ${on ? 'on' : ''} ${h ? 'filled' : ''}" data-i="${i}" title="${h ? esc(h.localized_name) : 'Выбрать героя'}">
+          ${h ? `<img src="${heroImg(h)}" alt=""><span class="dn">${esc(h.localized_name)}</span><span class="rm" data-rm>✕</span>` : `<span class="plus">+</span>`}
+        </button>`;
+      }).join('');
+      $$('.dslot', wrap).forEach(b => b.onclick = e => {
+        const i = +b.dataset.i;
+        if (e.target.closest('[data-rm]')) { dr[side][i] = null; }
+        active = { side, i };
+        drawSlots(); drawGrid();
+      });
+    });
+  }
+  function drawGrid() {
+    const grid = $('#dGrid', box); if (!grid || !HEROES) return;
+    const s = dq.trim().toLowerCase();
+    const used = new Set([...dr.radiant, ...dr.dire].filter(Boolean));
+    const list = HEROES.filter(h => !s || h.localized_name.toLowerCase().includes(s));
+    grid.innerHTML = list.map(h => `<button type="button" class="dhero ${used.has(h.id) ? 'used' : ''}" data-id="${h.id}" title="${esc(h.localized_name)}"><img src="${heroImg(h)}" alt="" loading="lazy"><span>${esc(h.localized_name)}</span></button>`).join('')
+      || '<div class="muted" style="grid-column:1/-1;padding:14px;text-align:center">Ничего не найдено</div>';
+    $$('.dhero', grid).forEach(b => b.onclick = () => {
+      const id = +b.dataset.id;
+      if (used.has(id)) { // уже в драфте — убрать оттуда
+        ['radiant', 'dire'].forEach(sd => { const k = dr[sd].indexOf(id); if (k >= 0) dr[sd][k] = null; });
+      } else {
+        if (!active) active = firstEmpty();
+        if (!active) { toast('Драфт заполнен — убери героя, чтобы заменить'); return; }
+        dr[active.side][active.i] = id;
+        active = firstEmpty();
+      }
+      drawSlots(); drawGrid();
+    });
+  }
+  $('#dQ', box).oninput = e => { dq = e.target.value; drawGrid(); };
+  $('#dQ', box).onkeydown = e => { if (e.key === 'Enter') { e.preventDefault(); const b = $('.dhero:not(.used)', box); b && b.click(); dq = ''; e.target.value = ''; drawGrid(); } };
+  active = firstEmpty();
+  drawSlots();
+  loadHeroes().then(drawGrid);
+
+  const catSel = $('select[name=cat]', form);
+  const toggle = () => {
+    const on = catSel.value === 'draft';
+    box.style.display = on ? '' : 'none';
+    $('.modal').classList.toggle('wide', on);
+  };
+  catSel.onchange = toggle;
+  toggle();
+}
+function draftView(d) {
+  const side = (ids, cls, name) => `<div class="dv-row ${cls}"><span class="dv-n">${name}</span>${ids.map(id => {
+    const h = id && HERO[id];
+    return h ? `<a href="#/builds/${h.id}" title="${esc(h.localized_name)}"><img src="${heroImg(h)}" alt=""></a>` : `<i></i>`;
+  }).join('')}</div>`;
+  return `<div class="dview">${side(d.radiant || [], 'rad', 'Radiant')}${side(d.dire || [], 'dire', 'Dire')}</div>`;
 }
 function renderNotes(el) {
   setActions(`<button class="btn btn-primary" id="nAdd">${ic('plus')}Новая запись</button>`);
@@ -1385,7 +1474,8 @@ function renderNotes(el) {
     </div>`;
   const draw = () => {
     const q = notesUI.q.trim().toLowerCase();
-    const list = db.notes.filter(n => (!notesUI.cat || n.cat === notesUI.cat) && (!q || [n.title, n.text, n.hero, ...(n.tags || [])].join(' ').toLowerCase().includes(q)))
+    const draftNames = n => n.draft ? [...n.draft.radiant, ...n.draft.dire].filter(Boolean).map(id => HERO[id]?.localized_name || '') : [];
+    const list = db.notes.filter(n => (!notesUI.cat || n.cat === notesUI.cat) && (!q || [n.title, n.text, n.hero, ...(n.tags || []), ...draftNames(n)].join(' ').toLowerCase().includes(q)))
       .sort((a, b) => (b.pinned - a.pinned) || b.date.localeCompare(a.date) || b.id.localeCompare(a.id));
     $('#nGrid').innerHTML = list.length ? `<div class="notes-grid">${list.map(n => {
       const c = NOTE_CATS[n.cat] || NOTE_CATS.other;
@@ -1393,6 +1483,7 @@ function renderNotes(el) {
         <div class="acts"><button class="icon-btn" data-pin title="Закрепить" style="${n.pinned ? 'color:var(--gold)' : ''}">${ic('pin')}</button><button class="icon-btn" data-edit>${ic('edit')}</button><button class="icon-btn danger" data-del>${ic('trash')}</button></div>
         <span class="cat">${c.n}</span>
         <h4>${esc(n.title)}</h4>
+        ${n.draft ? draftView(n.draft) : ''}
         ${n.text ? `<div class="text">${esc(n.text)}</div>` : ''}
         <div class="foot">${n.hero ? `<span class="tag">${heroImgByName(n.hero) ? `<img src="${heroImgByName(n.hero)}" style="width:22px;height:13px;border-radius:2px;object-fit:cover">` : ''}${esc(n.hero)}</span>` : ''}${(n.tags || []).map(t => `<span class="tag">#${esc(t)}</span>`).join('')}<span class="spacer"></span>${fmtDate(n.date)}</div>
       </div>`;
@@ -1408,6 +1499,7 @@ function renderNotes(el) {
   $('#nQ').oninput = e => { notesUI.q = e.target.value; draw(); };
   $$('#nCat .chip').forEach(c => c.onclick = () => { notesUI.cat = c.dataset.c; $$('#nCat .chip').forEach(x => x.classList.toggle('on', x === c)); draw(); });
   draw();
+  if (!HEROES && db.notes.some(n => n.draft)) loadHeroes().then(ok => ok && $('#nGrid') && draw());
 }
 
 /* ============================================================
