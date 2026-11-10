@@ -1,4 +1,4 @@
-﻿:root{
+:root{
   --bg:#090b10; --bg2:#0e1118; --panel:#141822; --panel2:#1a1f2c; --panel3:#222838;
   --line:rgba(255,255,255,.07); --line2:rgba(255,255,255,.12);
   --text:#ece9e4; --muted:#8c93a6; --dim:#5e6578;
@@ -296,7 +296,7 @@ select.input{appearance:none;background-image:linear-gradient(45deg,transparent 
 /* MMR */
 .chart{width:100%;height:260px;display:block}
 .chart.sm{height:170px}
-.quick{display:grid;grid-template-columns:auto 1.3fr 1fr 90px 140px 1.4fr auto;gap:10px;align-items:end}
+.quick{display:grid;grid-template-columns:120px auto 1.2fr 1fr 80px 140px 1.3fr auto;gap:10px;align-items:end}
 .wl{display:inline-flex;border-radius:10px;overflow:hidden;border:1px solid var(--line2)}
 .wl button{border:0;padding:10px 14px;background:var(--bg2);color:var(--muted);cursor:pointer;font-weight:700}
 .wl button.on.w{background:rgba(76,194,122,.2);color:var(--green)}
@@ -421,3 +421,19 @@ select.input{appearance:none;background-image:linear-gradient(45deg,transparent 
 .dv-row a,.dv-row i{flex:1;max-width:46px;aspect-ratio:128/72;border-radius:4px;overflow:hidden;display:block;background:rgba(255,255,255,.05)}
 .dv-row img{width:100%;height:100%;object-fit:cover;display:block}
 @media (max-width:640px){.dsides{grid-template-columns:1fr}.dvs{text-align:center}}
+
+/* ---- Калькулятор ПТС и цель по ПТС ---- */
+.calc-hint{min-height:18px;margin-top:10px;font-size:13px}
+.field .calc-hint{margin-top:6px}
+.gold-t{color:var(--gold)}
+.warn-t{color:#ff8a5c;font-weight:600}
+#qAfter{border-color:rgba(224,173,82,.45)}
+.mg{margin-top:10px}
+.mg .progress{margin-bottom:8px}
+.mg-l{font-size:13px;color:var(--muted);line-height:1.6}
+.mg-l b{color:var(--text)}
+.mg-l b.gold-t{color:var(--gold)}
+.goal-mmr{align-items:flex-start}
+.goal-mmr .box{margin-top:2px}
+a.goal-mmr{color:inherit;text-decoration:none}
+a.goal-mmr .t{display:block;width:100%}

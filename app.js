@@ -8,7 +8,7 @@
 const API = 'https://api.opendota.com/api';
 const CDN = 'https://cdn.cloudflare.steamstatic.com';
 const KEY = 'd2helper_db_v1';
-const VERSION = '1.4.1';
+const VERSION = '1.5.0';
 
 const BRACKETS = [
   { v: '1', n: 'Рекрут' }, { v: '2', n: 'Страж' }, { v: '3', n: 'Рыцарь' }, { v: '4', n: 'Герой' },
@@ -232,6 +232,54 @@ function mmrSeries() {
   let cur = +db.startMmr || 0;
   return list.map(e => { cur += e.result === 'W' ? Math.abs(+e.delta) : -Math.abs(+e.delta); return { ...e, after: cur }; });
 }
+// Обычное изменение ПТС за победу / поражение — медиана последних 20 (не сбивается одной странной записью)
+function mmrAvg() {
+  const s = mmrSeries();
+  const avg = r => {
+    const a = s.filter(e => e.result === r).map(e => Math.abs(+e.delta)).filter(Boolean).slice(-20).sort((x, y) => x - y);
+    if (!a.length) return 0; const k = a.length >> 1;
+    return Math.round(a.length % 2 ? a[k] : (a[k - 1] + a[k]) / 2);
+  };
+  const w = avg('W'), l = avg('L');
+  return { win: w || l || 25, loss: l || w || 25, known: !!(w || l) };
+}
+// Калькулятор цели по ПТС
+function mmrGoalCalc(g, m = mmrStats()) {
+  const cur = m.cur, left = g.target - cur, a = mmrAvg();
+  const from = g.from ?? cur, span = g.target - from;
+  const prog = left <= 0 ? 1 : span > 0 ? Math.max(0, Math.min(1, (cur - from) / span)) : 0;
+  const wr = m.games >= 10 ? m.wins / m.games : 0.5;
+  const net = wr * a.win - (1 - wr) * a.loss;           // средний плюс за игру при текущем винрейте
+  const breakEven = a.loss / (a.win + a.loss);           // винрейт, при котором ПТС стоит на месте
+  const wins = left > 0 ? Math.ceil(left / a.win) : 0;   // побед подряд
+  const games = left <= 0 ? 0 : net > 0.05 ? Math.ceil(left / net) : null;
+  let days = null, perDay = null;
+  if (g.deadline) {
+    days = Math.ceil((new Date(g.deadline) - new Date(today())) / 864e5);
+    if (games && days > 0) perDay = games / days;
+  }
+  return { cur, left, prog, wins, games, wr, net, a, breakEven, days, perDay, estWr: m.games >= 10 };
+}
+function mmrGoalInfo(g, m) {
+  const c = mmrGoalCalc(g, m);
+  if (c.left <= 0) return `<div class="mg"><div class="progress"><i style="width:100%"></i></div><div class="mg-l"><b class="pos">Цель достигнута: ${c.cur} / ${g.target}</b></div></div>`;
+  const lines = [
+    `<b>${c.cur}</b> → <b>${g.target}</b> · осталось <b class="gold-t">${c.left} ПТС</b>`,
+    `≈ <b>${c.wins}</b> ${plural(c.wins, 'победа', 'победы', 'побед')} подряд (по +${c.a.win})`,
+    c.games ? `≈ <b>${c.games}</b> ${plural(c.games, 'игра', 'игры', 'игр')} при ${c.estWr ? 'твоём' : 'условном'} WR ${pct(c.wr * 100, 0)} (в среднем ${sign(Math.round(c.net * 10) / 10)} за игру)`
+      : `<span class="neg">При WR ${pct(c.wr * 100, 0)} ПТС не растёт — нужен винрейт выше ${pct(c.breakEven * 100, 0)}</span>`,
+  ];
+  if (g.deadline) lines.push(c.days <= 0 ? `<span class="neg">Дедлайн прошёл (${fmtDate(g.deadline)})</span>`
+    : c.perDay ? `≈ <b>${Math.ceil(c.perDay * 10) / 10}</b> ${plural(Math.ceil(c.perDay), 'игра', 'игры', 'игр')} в день до ${fmtDate(g.deadline)} (${c.days} ${plural(c.days, 'день', 'дня', 'дней')})` : `До дедлайна ${c.days} ${plural(c.days, 'день', 'дня', 'дней')}`);
+  return `<div class="mg"><div class="progress"><i style="width:${c.prog * 100}%"></i></div>${lines.map(l => `<div class="mg-l">${l}</div>`).join('')}</div>`;
+}
+// Автоматически закрывает цели по ПТС, когда они достигнуты
+function checkMmrGoals() {
+  const cur = mmrStats().cur;
+  db.goals.filter(g => g.type === 'mmr' && !g.done && cur >= g.target).forEach(g => {
+    g.done = true; g.doneAt = today(); save(); setTimeout(() => toast(`Цель выполнена: ${g.target} ПТС 🏆`), 600);
+  });
+}
 function mmrStats() {
   const s = mmrSeries();
   const cur = s.length ? s[s.length - 1].after : +db.startMmr;
@@ -416,6 +464,7 @@ async function withHeroes(el, fn) {
    ГЛАВНАЯ
    ============================================================ */
 function renderDashboard(el) {
+  checkMmrGoals();
   const m = mmrStats();
   const streak = trainStreak();
   const weekAgo = addDays(today(), -7);
@@ -462,7 +511,11 @@ function renderDashboard(el) {
         </div>
         <div class="card">
           <div class="card-head"><h3>Цели</h3><a class="btn btn-ghost btn-sm" href="#/goals">Все</a></div>
-          <div class="list">${goalsOpen.slice(0, 4).map(g => `<div class="goal" data-gid="${g.id}"><span class="box" data-toggle-goal></span><span class="t">${esc(g.text)}</span></div>`).join('') || '<div class="muted">Поставь цель — например «Апнуть 4000 ПТС» или «Освоить Puck».</div>'}</div>
+          <div class="list">${goalsOpen.slice(0, 4).map(g => {
+            if (g.type !== 'mmr') return `<div class="goal" data-gid="${g.id}"><span class="box" data-toggle-goal></span><span class="t">${esc(g.text)}</span></div>`;
+            const c = mmrGoalCalc(g, m);
+            return `<a class="goal goal-mmr" href="#/mmr" data-gid="${g.id}"><span class="t">🎯 ${esc(g.text)}<div class="mg"><div class="progress"><i style="width:${c.prog * 100}%"></i></div><div class="mg-l muted">Осталось <b class="gold-t">${Math.max(0, c.left)}</b> · ≈ ${c.wins} ${plural(c.wins, 'победа', 'победы', 'побед')}${c.games ? ` / ${c.games} ${plural(c.games, 'игра', 'игры', 'игр')}` : ''}</div></div></span></a>`;
+          }).join('') || '<div class="muted">Поставь цель — например «Апнуть 4000 ПТС» или «Освоить Puck».</div>'}</div>
         </div>
         <div class="card">
           <div class="card-head"><h3>Последние наблюдения</h3><a class="btn btn-ghost btn-sm" href="#/notes">Все</a></div>
@@ -1182,22 +1235,43 @@ function drawTalents(abil) {
    ============================================================ */
 let quickRes = 'W';
 function openGameModal(e = {}) {
+  const cur = mmrStats().cur, av = mmrAvg();
   openModal(e.id ? 'Редактировать игру' : 'Записать игру', [
+    ...(e.id ? [] : [{ name: 'after', label: `ПТС после игры (сейчас записано ${cur})`, type: 'number', full: true, value: '', ph: 'Введи ПТС из профиля — изменение посчитается само' }]),
     { name: 'result', label: 'Результат', type: 'select', value: e.result || 'W', options: [['W', 'Победа'], ['L', 'Поражение']] },
-    { name: 'delta', label: 'Изменение ПТС', type: 'number', value: e.delta ?? 25, min: 0, required: true },
+    { name: 'delta', label: 'Изменение ПТС', type: 'number', value: e.delta ?? av.win, min: 0, required: true },
     { name: 'hero', label: 'Герой', type: 'hero', value: e.hero || '' },
     { name: 'pos', label: 'Позиция', type: 'select', value: e.pos || '', options: [['', '—'], ...POS.map(p => [p, p])] },
     { name: 'date', label: 'Дата', type: 'date', value: e.date || today(), required: true },
     { name: 'kda', label: 'K / D / A', value: e.kda || '', ph: '8/3/12' },
     { name: 'note', label: 'Комментарий', type: 'textarea', full: true, rows: 3, value: e.note || '', ph: 'Что получилось, что нет?' },
   ], d => {
+    delete d.after;
     d.delta = Math.abs(+d.delta || 0);
     if (e.id) Object.assign(db.mmr.find(x => x.id === e.id), d); else db.mmr.push({ id: uid(), ...d });
-    save(); toast(d.result === 'W' ? `Победа! +${d.delta} 🏆` : `Поражение −${d.delta}. Разбери реплей 💪`); rerender();
+    save(); checkMmrGoals(); toast(d.result === 'W' ? `Победа! +${d.delta} 🏆` : `Поражение −${d.delta}. Разбери реплей 💪`); rerender();
   });
+  const form = $('#modalForm');
+  const resSel = $('select[name=result]', form), dIn = $('input[name=delta]', form), aIn = $('input[name=after]', form);
+  let touched = !!e.id;
+  dIn.addEventListener('input', () => { touched = true; });
+  resSel.addEventListener('change', () => { if (!touched) dIn.value = resSel.value === 'W' ? av.win : av.loss; });
+  if (aIn) {
+    const hint = document.createElement('div'); hint.className = 'calc-hint'; aIn.after(hint);
+    aIn.addEventListener('input', () => {
+      const v = aIn.value.trim();
+      if (!v) { hint.innerHTML = ''; return; }
+      const diff = Math.round(+v - cur);
+      if (!diff) { hint.innerHTML = '<span class="muted">Без изменений относительно записанного ПТС</span>'; return; }
+      resSel.value = diff > 0 ? 'W' : 'L'; dIn.value = Math.abs(diff); touched = true;
+      hint.innerHTML = `<b class="${diff > 0 ? 'pos' : 'neg'}">${sign(diff)} ПТС</b> · ${diff > 0 ? 'победа' : 'поражение'}${Math.abs(diff) > 60 ? ' <span class="warn-t">— большая разница, возможно не все игры записаны</span>' : ''}`;
+    });
+  }
 }
 function renderMmr(el) {
-  const m = mmrStats();
+  checkMmrGoals();
+  const m = mmrStats(), av = mmrAvg();
+  const mGoal = db.goals.filter(g => g.type === 'mmr' && !g.done).sort((a, b) => a.target - b.target)[0];
   setActions(`<button class="btn btn-ghost" id="mStart">Стартовый ПТС: ${db.startMmr}</button><button class="btn btn-primary" id="mAdd">${ic('plus')}Подробная запись</button>`);
   const byHero = {};
   m.s.forEach(e => { if (!e.hero) return; const k = e.hero; byHero[k] = byHero[k] || { n: k, g: 0, w: 0, d: 0 }; byHero[k].g++; if (e.result === 'W') byHero[k].w++; byHero[k].d += e.result === 'W' ? +e.delta : -e.delta; });
@@ -1215,16 +1289,23 @@ function renderMmr(el) {
     </div>
 
     <div class="card">
-      <div class="card-head"><h3>Быстрая запись игры</h3><span class="sub">ПТС посчитается автоматически</span></div>
+      <div class="card-head"><h3>Быстрая запись игры</h3><span class="sub">Введи ПТС из профиля — изменение посчитается само</span></div>
       <form class="quick" id="qForm">
+        <div class="field"><label>ПТС после игры</label><input class="input" type="number" name="after" id="qAfter" placeholder="${m.cur}" min="0"></div>
         <div class="field"><label>Итог</label><div class="wl"><button type="button" class="w ${quickRes === 'W' ? 'on' : ''}" data-r="W">Победа</button><button type="button" class="l ${quickRes === 'L' ? 'on' : ''}" data-r="L">Поражение</button></div></div>
         <div class="field"><label>Герой</label><input class="input" name="hero" list="heroList" placeholder="Герой" autocomplete="off"></div>
         <div class="field"><label>Позиция</label><select class="input" name="pos"><option value="">—</option>${POS.map(p => `<option>${p}</option>`).join('')}</select></div>
-        <div class="field"><label>± ПТС</label><input class="input" type="number" name="delta" value="25" min="0"></div>
+        <div class="field"><label>± ПТС</label><input class="input" type="number" name="delta" id="qDelta" value="${quickRes === 'W' ? av.win : av.loss}" min="0"></div>
         <div class="field"><label>Дата</label><input class="input" type="date" name="date" value="${today()}"></div>
         <div class="field full"><label>Комментарий</label><input class="input" name="note" placeholder="Коротко: что решило игру"></div>
         <button class="btn btn-primary">${ic('plus')}Записать</button>
       </form>
+      <div class="calc-hint" id="qHint">${av.known ? `<span class="muted">Обычно у тебя: победа +${av.win}, поражение −${av.loss}</span>` : ''}</div>
+    </div>
+
+    <div class="card">
+      <div class="card-head"><div><h3>Цель по ПТС</h3><div class="sub">Считается автоматически по твоим играм</div></div>${mGoal ? '<a class="btn btn-ghost btn-sm" href="#/goals">Все цели</a>' : '<button class="btn btn-ghost btn-sm" id="mGoalAdd">' + ic('plus') + 'Поставить цель</button>'}</div>
+      ${mGoal ? mmrGoalInfo(mGoal, m) : `<div class="muted">Поставь цель — например ${Math.ceil((m.cur + 500) / 100) * 100} ПТС — и здесь появится, сколько побед и игр осталось.</div>`}
     </div>
 
     <div class="card">
@@ -1263,15 +1344,30 @@ function renderMmr(el) {
   cv._draw = () => drawLine(cv, [+db.startMmr, ...m.s.map(e => e.after)], ['старт', ...m.s.map(e => fmtDate(e.date))]);
   requestAnimationFrame(cv._draw);
 
-  $$('.wl button', el).forEach(b => b.onclick = () => { quickRes = b.dataset.r; $$('.wl button', el).forEach(x => x.classList.toggle('on', x === b)); });
+  const qDelta = $('#qDelta'), qAfter = $('#qAfter'), qHint = $('#qHint');
+  let qTouched = false;
+  const setRes = r => { quickRes = r; $$('.wl button', el).forEach(x => x.classList.toggle('on', x.dataset.r === r)); };
+  $$('.wl button', el).forEach(b => b.onclick = () => { setRes(b.dataset.r); if (!qTouched && !qAfter.value) qDelta.value = quickRes === 'W' ? av.win : av.loss; });
+  qDelta.oninput = () => { qTouched = true; };
+  qAfter.oninput = () => {
+    const v = qAfter.value.trim();
+    if (!v) { qHint.innerHTML = av.known ? `<span class="muted">Обычно у тебя: победа +${av.win}, поражение −${av.loss}</span>` : ''; return; }
+    const diff = Math.round(+v - m.cur);
+    if (!diff) { qHint.innerHTML = `<span class="muted">Совпадает с записанным ПТС (${m.cur})</span>`; return; }
+    setRes(diff > 0 ? 'W' : 'L'); qDelta.value = Math.abs(diff);
+    qHint.innerHTML = `${m.cur} → ${+v}: <b class="${diff > 0 ? 'pos' : 'neg'}">${sign(diff)} ПТС</b>, ${diff > 0 ? 'победа' : 'поражение'}${Math.abs(diff) > 60 ? ' <span class="warn-t">— большая разница, возможно не все игры записаны</span>' : ''}`;
+  };
   $('#qForm').onsubmit = ev => {
     ev.preventDefault();
     const d = Object.fromEntries(new FormData(ev.target).entries());
+    delete d.after;
     d.result = quickRes; d.delta = Math.abs(+d.delta || 0); d.date = d.date || today();
-    db.mmr.push({ id: uid(), ...d }); save();
+    if (!d.delta) { toast('Укажи ПТС после игры или изменение'); return; }
+    db.mmr.push({ id: uid(), ...d }); save(); checkMmrGoals();
     toast(d.result === 'W' ? `Победа! +${d.delta} 🏆` : `Поражение −${d.delta}. Разбери реплей 💪`);
     rerender();
   };
+  $('#mGoalAdd') && ($('#mGoalAdd').onclick = () => openMmrGoalModal());
   $('#mAdd').onclick = () => openGameModal();
   $('#mStart').onclick = () => openModal('Стартовый ПТС', [{ name: 'startMmr', label: 'С какого ПТС ты начинаешь вести дневник', type: 'number', value: db.startMmr, full: true, required: true }], d => { db.startMmr = +d.startMmr || 0; save(); rerender(); });
   $$('tr[data-id]', el).forEach(tr => {
@@ -1518,10 +1614,26 @@ function renderNotes(el) {
 /* ============================================================
    ЦЕЛИ
    ============================================================ */
+function addMmrGoal(target, deadline) {
+  const cur = mmrStats().cur;
+  target = Math.round(+target);
+  if (!target || target <= cur) { toast(`Целевой ПТС должен быть больше текущего (${cur})`); return false; }
+  db.goals.push({ id: uid(), type: 'mmr', target, from: cur, text: `Апнуть ${target} ПТС`, deadline: deadline || '', done: false });
+  save(); toast('Цель по ПТС поставлена 🎯'); rerender();
+}
+function openMmrGoalModal() {
+  const cur = mmrStats().cur;
+  openModal('Цель по ПТС', [
+    { name: 'target', label: `Целевой ПТС (сейчас ${cur})`, type: 'number', value: Math.ceil((cur + 500) / 100) * 100, min: cur + 1, required: true },
+    { name: 'deadline', label: 'Дедлайн (необязательно)', type: 'date', value: '' },
+  ], d => addMmrGoal(d.target, d.deadline), 'Поставить цель');
+}
 function renderGoals(el) {
+  checkMmrGoals();
   const open = db.goals.filter(g => !g.done), done = db.goals.filter(g => g.done);
   const p = db.goals.length ? done.length / db.goals.length * 100 : 0;
-  const goalHtml = g => `<div class="goal ${g.done ? 'done' : ''}" data-id="${g.id}"><span class="box" data-t></span><span class="t">${esc(g.text)}${g.deadline ? ` <span class="tag">до ${fmtDate(g.deadline)}</span>` : ''}</span><button class="icon-btn danger" data-del>${ic('trash')}</button></div>`;
+  const m = mmrStats();
+  const goalHtml = g => `<div class="goal ${g.done ? 'done' : ''} ${g.type === 'mmr' ? 'goal-mmr' : ''}" data-id="${g.id}"><span class="box" data-t></span><div class="t">${g.type === 'mmr' ? '🎯 ' : ''}${esc(g.text)}${g.deadline ? ` <span class="tag">до ${fmtDate(g.deadline)}</span>` : ''}${g.type === 'mmr' && !g.done ? mmrGoalInfo(g, m) : ''}</div><button class="icon-btn danger" data-del>${ic('trash')}</button></div>`;
   el.innerHTML = `
     <div class="stack">
       <div class="card">
@@ -1531,14 +1643,22 @@ function renderGoals(el) {
           <input class="input" name="text" placeholder="Новая цель: «Апнуть 4000 ПТС», «80 крипов к 10 мин на Антимаге»…" style="flex:3;min-width:220px" required>
           <input class="input" type="date" name="deadline" style="flex:1;min-width:150px" title="Дедлайн (необязательно)">
           <button class="btn btn-primary">${ic('plus')}Добавить</button>
+          <button type="button" class="btn btn-ghost" id="gMmr">🎯 Цель по ПТС</button>
         </form>
+        <div class="muted" style="font-size:12px;margin-top:8px">Цель вида «Апнуть 4000 ПТС» станет целью по ПТС сама: прогресс и сколько игр осталось посчитаются по твоим записям.</div>
       </div>
       <div class="grid g2">
         <div class="card"><div class="card-head"><h3>В процессе</h3><span class="sub">${open.length}</span></div><div class="list">${open.map(goalHtml).join('') || '<div class="muted">Нет активных целей</div>'}</div></div>
         <div class="card"><div class="card-head"><h3>Выполнено 🏆</h3><span class="sub">${done.length}</span></div><div class="list">${done.map(goalHtml).join('') || '<div class="muted">Пока ничего — всё впереди</div>'}</div></div>
       </div>
     </div>`;
-  $('#gForm').onsubmit = e => { e.preventDefault(); const d = Object.fromEntries(new FormData(e.target).entries()); db.goals.push({ id: uid(), text: d.text.trim(), deadline: d.deadline, done: false }); save(); rerender(); };
+  $('#gForm').onsubmit = e => {
+    e.preventDefault(); const d = Object.fromEntries(new FormData(e.target).entries());
+    const mm = d.text.match(/(\d{3,5})\s*(птс|ммр|mmr|pts)/i) || d.text.match(/(?:птс|ммр|mmr)\D{0,6}(\d{3,5})/i);
+    if (mm && +mm[1] > m.cur) { addMmrGoal(mm[1], d.deadline); return; }
+    db.goals.push({ id: uid(), text: d.text.trim(), deadline: d.deadline, done: false }); save(); rerender();
+  };
+  $('#gMmr').onclick = () => openMmrGoalModal();
   $$('.goal', el).forEach(c => {
     const g = db.goals.find(x => x.id === c.dataset.id);
     $('[data-t]', c).onclick = () => { g.done = !g.done; if (g.done) toast('Цель выполнена 🏆'); save(); rerender(); };
