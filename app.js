@@ -8,7 +8,7 @@
 const API = 'https://api.opendota.com/api';
 const CDN = 'https://cdn.cloudflare.steamstatic.com';
 const KEY = 'd2helper_db_v1';
-const VERSION = '1.5.0';
+const VERSION = '1.6.0';
 
 const BRACKETS = [
   { v: '1', n: 'Рекрут' }, { v: '2', n: 'Страж' }, { v: '3', n: 'Рыцарь' }, { v: '4', n: 'Герой' },
@@ -82,6 +82,7 @@ const ICONS = {
   trophy: '<path d="M8 4h8v5a4 4 0 0 1-8 0zM8 6H4v1a4 4 0 0 0 4 4M16 6h4v1a4 4 0 0 1-4 4M12 13v4M8 21h8M9 17h6"/>',
   clock: '<circle cx="12" cy="12" r="9"/><path d="M12 7v5l3 2"/>',
   back: '<path d="M15 18l-6-6 6-6"/>',
+  pool: '<circle cx="9" cy="8" r="3.2"/><path d="M3 20a6 6 0 0 1 12 0M16 4.5a3 3 0 0 1 0 6M21 20a6 6 0 0 0-3.8-5.6"/>',
 };
 const ic = (n, cls = 'ic') => `<svg viewBox="0 0 24 24" class="${cls}" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">${ICONS[n]}</svg>`;
 
@@ -95,6 +96,8 @@ const defaults = () => ({
 let db;
 try { db = Object.assign(defaults(), JSON.parse(localStorage.getItem(KEY) || '{}')); } catch { db = defaults(); }
 if (db.bracket === '8') db.bracket = '7';
+function fixPool() { if (!db.pool || typeof db.pool !== 'object') db.pool = {}; [1, 2, 3, 4, 5].forEach(p => { if (!Array.isArray(db.pool[p])) db.pool[p] = []; }); }
+fixPool();
 function save() { try { localStorage.setItem(KEY, JSON.stringify(db)); } catch { toast('Не удалось сохранить данные'); } }
 function cacheGet(k, maxAge) { try { const o = JSON.parse(localStorage.getItem(k)); if (o && Date.now() - o.t < maxAge) return o; } catch { } return null; }
 function cacheSet(k, data) { try { localStorage.setItem(k, JSON.stringify({ t: Date.now(), data })); } catch { } }
@@ -414,6 +417,7 @@ const VIEWS = {
   meta: { t: 'Мета', icon: 'meta', group: 'Обзор', render: renderMeta, crumb: 'Актуальный патч · OpenDota' },
   builds: { t: 'Билды героев', icon: 'builds', group: 'Обзор', render: renderBuilds },
   mmr: { t: 'ПТС / MMR', icon: 'mmr', group: 'Дневник', render: renderMmr, badge: () => db.mmr.length },
+  pool: { t: 'Мой пул', icon: 'pool', group: 'Дневник', render: renderPool, badge: () => new Set(Object.values(db.pool).flat()).size },
   training: { t: 'Тренировки', icon: 'train', group: 'Дневник', render: renderTraining, badge: () => db.trainings.length },
   notes: { t: 'Наблюдения', icon: 'notes', group: 'Дневник', render: renderNotes, badge: () => db.notes.length },
   goals: { t: 'Цели', icon: 'goals', group: 'Дневник', render: renderGoals, badge: () => db.goals.filter(g => !g.done).length },
@@ -1612,6 +1616,122 @@ function renderNotes(el) {
 }
 
 /* ============================================================
+   МОЙ ПУЛ
+   ============================================================ */
+// Мои игры на герое: на этой позиции и всего
+function myHeroStats(heroId, posIdx) {
+  const pos = posIdx ? POS[posIdx - 1] : null;
+  const z = () => ({ g: 0, w: 0, d: 0 });
+  const onPos = z(), all = z();
+  db.mmr.forEach(e => {
+    const h = heroByName(e.hero); if (!h || h.id !== heroId) return;
+    const win = e.result === 'W', dl = (win ? 1 : -1) * Math.abs(+e.delta || 0);
+    all.g++; all.w += win; all.d += dl;
+    if (pos && e.pos === pos) { onPos.g++; onPos.w += win; onPos.d += dl; }
+  });
+  return { onPos, all };
+}
+function renderPool(el) {
+  const bName = BRACKETS.find(b => b.v === db.bracket)?.n || '';
+  setActions(`<a class="btn btn-ghost" href="#/settings">Ранг для меты: ${esc(bName)}</a>`);
+  if (!HEROES) { loadingView(el); loadHeroes().then(ok => { if (CURRENT?.name !== 'pool') return; ok ? renderPool(el) : offlineView(el, () => renderPool(el)); }); return; }
+  const meta = {}; bracketStats(db.bracket).forEach(r => meta[r.h.id] = r);
+
+  // Сводка
+  const ids = [...new Set(Object.values(db.pool).flat())];
+  let tg = 0, tw = 0, td = 0;
+  const posSum = [1, 2, 3, 4, 5].map(p => {
+    const s = { g: 0, w: 0, d: 0 };
+    db.pool[p].forEach(id => { const x = myHeroStats(id, p).onPos; s.g += x.g; s.w += x.w; s.d += x.d; });
+    tg += s.g; tw += s.w; td += s.d;
+    return s;
+  });
+  const best = posSum.map((s, i) => ({ ...s, p: i + 1 })).filter(s => s.g >= 3).sort((a, b) => b.w / b.g - a.w / a.g)[0];
+  const wrCls = (w, g) => g ? (w / g >= 0.5 ? 'pos' : 'neg') : 'muted';
+
+  el.innerHTML = `
+  <div class="stack">
+    <div class="grid g4">
+      <div class="card kpi" style="--accent:var(--gold)"><div class="lbl">${ic('pool')}Героев в пуле</div><div class="val">${ids.length}</div><div class="hint">${[1, 2, 3, 4, 5].filter(p => db.pool[p].length).length} из 5 позиций заполнено</div></div>
+      <div class="card kpi" style="--accent:var(--blue)"><div class="lbl">${ic('mmr')}Винрейт пула</div><div class="val ${wrCls(tw, tg)}">${tg ? pct(tw / tg * 100, 0) : '—'}</div><div class="hint">${tg ? `${tw}W – ${tg - tw}L на своих позициях` : 'Записывай игры с героем и позицией'}</div></div>
+      <div class="card kpi" style="--accent:${td >= 0 ? 'var(--green)' : 'var(--red)'}"><div class="lbl">${ic('trophy')}ПТС на пуле</div><div class="val ${td >= 0 ? 'pos' : 'neg'}">${tg ? sign(td) : '—'}</div><div class="hint">${tg} ${plural(tg, 'игра', 'игры', 'игр')}</div></div>
+      <div class="card kpi" style="--accent:var(--green)"><div class="lbl">${ic('fire')}Лучшая позиция</div><div class="val" style="font-size:24px">${best ? POS[best.p - 1].split(' — ')[0] : '—'}</div><div class="hint">${best ? `WR ${pct(best.w / best.g * 100, 0)} · ${best.g} ${plural(best.g, 'игра', 'игры', 'игр')}` : 'Нужно от 3 игр на позиции'}</div></div>
+    </div>
+    <div class="pool-grid">${[1, 2, 3, 4, 5].map(p => {
+      const s = posSum[p - 1];
+      return `<div class="card pool-col" data-p="${p}">
+        <div class="pool-head">
+          <div><div class="pool-pos">Pos ${p}</div><h3>${POS_SHORT[p - 1]}</h3></div>
+          <div class="pool-wr">${s.g ? `<b class="${wrCls(s.w, s.g)}">${pct(s.w / s.g * 100, 0)}</b><span>${s.w}–${s.g - s.w}</span>` : '<span class="muted">нет игр</span>'}</div>
+        </div>
+        <div class="pool-list">${db.pool[p].map(id => {
+          const h = HERO[id]; if (!h) return '';
+          const { onPos: o, all: a } = myHeroStats(id, p), mt = meta[id];
+          return `<div class="pool-hero" data-id="${id}">
+            <a href="#/builds/${id}" class="ph-img"><img src="${heroImg(h)}" alt=""></a>
+            <div class="ph-body">
+              <a href="#/builds/${id}" class="ph-name">${esc(h.localized_name)}</a>
+              <div class="ph-stats">
+                <span title="Мои игры на этой позиции">${o.g ? `Я: <b class="${wrCls(o.w, o.g)}">${pct(o.w / o.g * 100, 0)}</b> <i>${o.w}–${o.g - o.w} · ${sign(o.d)}</i>` : a.g ? `<span class="muted">Я: ${a.g} ${plural(a.g, 'игра', 'игры', 'игр')} на др. позициях</span>` : '<span class="muted">Я: нет игр</span>'}</span>
+                ${mt ? `<span title="Винрейт в мете · ${esc(bName)}">Мета: <b class="${mt.wr >= 50 ? 'pos' : 'neg'}">${pct(mt.wr, 1)}</b> <span class="tbadge t-${mt.tier}">${mt.tier}</span></span>` : ''}
+              </div>
+              ${o.g ? `<div class="ph-bar"><i style="width:${o.w / o.g * 100}%" class="${o.w / o.g >= 0.5 ? '' : 'bad'}"></i></div>` : ''}
+            </div>
+            <div class="ph-acts"><button class="icon-btn" data-up title="Выше">↑</button><button class="icon-btn danger" data-rm title="Убрать из пула">✕</button></div>
+          </div>`;
+        }).join('') || '<div class="muted pool-empty">Пока пусто</div>'}</div>
+        <button class="btn btn-ghost btn-sm w100" data-add>${ic('plus')}Добавить героя</button>
+      </div>`;
+    }).join('')}</div>
+    <div class="muted" style="font-size:12px">«Я» — твои игры из раздела ПТС на этом герое именно на этой позиции. «Мета» — винрейт героя в публичных матчах (${esc(bName)}, OpenDota). Ранг меняется в настройках.</div>
+  </div>`;
+
+  $$('.pool-col', el).forEach(col => {
+    const p = +col.dataset.p;
+    $('[data-add]', col).onclick = () => openPoolPicker(p);
+    $$('.pool-hero', col).forEach(row => {
+      const id = +row.dataset.id, list = db.pool[p], i = list.indexOf(id);
+      $('[data-rm]', row).onclick = () => { list.splice(i, 1); save(); rerender(); };
+      $('[data-up]', row).onclick = () => { if (i > 0) { [list[i - 1], list[i]] = [list[i], list[i - 1]]; save(); rerender(); } };
+    });
+  });
+}
+function openPoolPicker(p) {
+  let q = '', only = true;
+  const list = db.pool[p];
+  $('#modalTitle').textContent = `Пул · Pos ${p} — ${POS_SHORT[p - 1]}`;
+  $('.modal').classList.add('wide');
+  modalOnClose = () => { save(); rerender(); };
+  const form = $('#modalForm');
+  form.onsubmit = e => e.preventDefault();
+  form.innerHTML = `
+    <div class="row">
+      <label class="search">${ic('search')}<input class="input" id="ppQ" placeholder="Поиск героя…" autocomplete="off"></label>
+      <div class="seg" id="ppTabs"><button type="button" data-t="1" class="on">Подходят на позицию</button><button type="button" data-t="0">Все герои</button></div>
+    </div>
+    <div class="dgrid" id="ppGrid" style="max-height:52vh;margin-top:14px"></div>
+    <div class="modal-foot"><span class="muted" id="ppCount" style="margin-right:auto;align-self:center"></span><button type="button" class="btn btn-primary" data-close>Готово</button></div>`;
+  $('#modal').hidden = false;
+  const draw = () => {
+    const s = q.trim().toLowerCase();
+    const heroes = HEROES.filter(h => s ? h.localized_name.toLowerCase().includes(s) : (!only || heroFitsPos(h, p) || list.includes(h.id)));
+    $('#ppGrid').innerHTML = heroes.map(h => `<button type="button" class="dhero ${list.includes(h.id) ? 'picked' : ''}" data-id="${h.id}" title="${esc(h.localized_name)}"><img src="${heroImg(h)}" alt="" loading="lazy"><span>${esc(h.localized_name)}</span></button>`).join('')
+      || '<div class="muted" style="grid-column:1/-1;padding:14px;text-align:center">Ничего не найдено</div>';
+    $('#ppCount').textContent = `На позиции: ${list.length}`;
+    $$('#ppGrid .dhero').forEach(b => b.onclick = () => {
+      const id = +b.dataset.id, k = list.indexOf(id);
+      if (k >= 0) list.splice(k, 1); else list.push(id);
+      draw();
+    });
+  };
+  $('#ppQ').oninput = e => { q = e.target.value; draw(); };
+  $$('#ppTabs button').forEach(b => b.onclick = () => { only = b.dataset.t === '1'; $$('#ppTabs button').forEach(x => x.classList.toggle('on', x === b)); draw(); });
+  draw();
+  setTimeout(() => $('#ppQ')?.focus(), 30);
+  loadAllPositions().then(() => { if (!$('#modal').hidden && $('#ppGrid')) draw(); }).catch(() => { });
+}
+
+/* ============================================================
    ЦЕЛИ
    ============================================================ */
 function addMmrGoal(target, deadline) {
@@ -1704,7 +1824,7 @@ function renderSettings(el) {
   };
   $('#sImport').onchange = e => {
     const f = e.target.files[0]; if (!f) return;
-    f.text().then(async t => { const d = JSON.parse(t); if (!await askConfirm('Заменить текущие данные данными из файла?', 'Заменить')) return; db = Object.assign(defaults(), d); if (db.bracket === '8') db.bracket = '7'; save(); toast('Данные импортированы'); rerender(); })
+    f.text().then(async t => { const d = JSON.parse(t); if (!await askConfirm('Заменить текущие данные данными из файла?', 'Заменить')) return; db = Object.assign(defaults(), d); if (db.bracket === '8') db.bracket = '7'; fixPool(); save(); toast('Данные импортированы'); rerender(); })
       .catch(() => toast('Файл не похож на резервную копию D2Helper'));
   };
   $('#sCache').onclick = () => { Object.keys(localStorage).filter(k => k.startsWith('d2h_')).forEach(k => localStorage.removeItem(k)); HEROES = null; ITEMS = null; toast('Кэш очищен'); loadHeroes(true); };

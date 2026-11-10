@@ -437,3 +437,34 @@ select.input{appearance:none;background-image:linear-gradient(45deg,transparent 
 .goal-mmr .box{margin-top:2px}
 a.goal-mmr{color:inherit;text-decoration:none}
 a.goal-mmr .t{display:block;width:100%}
+/* ---- Мой пул ---- */
+.pool-grid{display:grid;grid-template-columns:repeat(5,minmax(0,1fr));gap:14px;align-items:start}
+.pool-col{display:flex;flex-direction:column;gap:12px;padding:16px}
+.pool-head{display:flex;justify-content:space-between;align-items:flex-start;gap:8px;padding-bottom:10px;border-bottom:1px solid var(--line)}
+.pool-head h3{margin:2px 0 0;font-size:17px}
+.pool-pos{font-family:'Exo 2';font-weight:800;font-size:11px;letter-spacing:1.5px;text-transform:uppercase;color:var(--gold)}
+.pool-wr{text-align:right;line-height:1.2}
+.pool-wr b{display:block;font-family:'Exo 2';font-size:20px}
+.pool-wr span{font-size:11px;color:var(--dim)}
+.pool-list{display:flex;flex-direction:column;gap:8px}
+.pool-empty{font-size:13px;padding:10px 0;text-align:center}
+.pool-hero{display:flex;gap:10px;align-items:center;padding:8px;border-radius:10px;background:var(--bg2);border:1px solid var(--line);position:relative}
+.pool-hero:hover{border-color:var(--line2)}
+.ph-img img{width:58px;height:33px;object-fit:cover;border-radius:5px;display:block}
+.ph-body{flex:1;min-width:0}
+.ph-name{display:block;font-weight:700;font-size:13.5px;color:var(--text);text-decoration:none;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.ph-name:hover{color:var(--gold)}
+.ph-stats{display:flex;flex-direction:column;gap:1px;font-size:11.5px;color:var(--muted);margin-top:2px}
+.ph-stats i{font-style:normal;color:var(--dim)}
+.ph-stats .tbadge{width:18px;height:16px;font-size:10px;vertical-align:middle;display:inline-grid}
+.ph-bar{height:3px;border-radius:2px;background:rgba(255,255,255,.07);margin-top:5px;overflow:hidden}
+.ph-bar i{display:block;height:100%;background:var(--green)}
+.ph-bar i.bad{background:var(--red)}
+.ph-acts{position:absolute;top:4px;right:4px;display:flex;opacity:0;transition:.15s;background:var(--bg2);border-radius:8px}
+.pool-hero:hover .ph-acts{opacity:1}
+.ph-acts .icon-btn{width:24px;height:24px;font-size:12px}
+.dhero.picked{border-color:var(--gold);box-shadow:0 0 0 1px var(--gold) inset;background:rgba(224,173,82,.12)}
+.dhero.picked span{color:var(--gold)}
+@media (max-width:1400px){.pool-grid{grid-template-columns:repeat(3,minmax(0,1fr))}}
+@media (max-width:900px){.pool-grid{grid-template-columns:repeat(2,minmax(0,1fr))}}
+@media (max-width:560px){.pool-grid{grid-template-columns:1fr}}
