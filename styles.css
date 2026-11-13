@@ -468,3 +468,22 @@ a.goal-mmr .t{display:block;width:100%}
 @media (max-width:1400px){.pool-grid{grid-template-columns:repeat(3,minmax(0,1fr))}}
 @media (max-width:900px){.pool-grid{grid-template-columns:repeat(2,minmax(0,1fr))}}
 @media (max-width:560px){.pool-grid{grid-template-columns:1fr}}
+/* ---- Контрпики ---- */
+.cp-sides{grid-template-columns:4fr auto 5fr}
+.dslots.cp4{grid-template-columns:repeat(4,1fr)}
+.check-inline{display:inline-flex;align-items:center;gap:6px;font-size:13px;color:var(--muted);cursor:pointer;white-space:nowrap}
+.check-inline input{accent-color:var(--gold);width:16px;height:16px}
+.cp-table th,.cp-table td{vertical-align:middle}
+.cp-table .mini-hero{color:inherit;text-decoration:none}
+.cp-table .mini-hero:hover b{color:var(--gold)}
+.cp-eh{text-align:center;padding:6px 4px}
+.cp-eh img{width:46px;height:26px;object-fit:cover;border-radius:4px;display:block;margin:auto;border:1px solid rgba(228,67,47,.5)}
+.cp-cell{text-align:center;padding:6px 4px;min-width:56px;border-radius:6px}
+.cp-cell{--pos:max(var(--a),0);--neg:max(calc(var(--a) * -1),0);
+  background:linear-gradient(rgba(76,194,122,calc(var(--pos) * .35)),rgba(76,194,122,calc(var(--pos) * .35))),linear-gradient(rgba(228,67,47,calc(var(--neg) * .35)),rgba(228,67,47,calc(var(--neg) * .35)))}
+.cp-cell b{display:block;font-size:13px}
+.cp-cell span{font-size:10.5px;color:var(--muted)}
+.cp-cell.na{color:var(--dim);background:none}
+.cp-checked td{background:rgba(224,173,82,.06)}
+.cp-legend{font-size:12px;margin-top:10px}
+@media (max-width:860px){.cp-sides{grid-template-columns:1fr}}

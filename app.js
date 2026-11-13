@@ -8,7 +8,7 @@
 const API = 'https://api.opendota.com/api';
 const CDN = 'https://cdn.cloudflare.steamstatic.com';
 const KEY = 'd2helper_db_v1';
-const VERSION = '1.6.0';
+const VERSION = '1.7.0';
 
 const BRACKETS = [
   { v: '1', n: 'Рекрут' }, { v: '2', n: 'Страж' }, { v: '3', n: 'Рыцарь' }, { v: '4', n: 'Герой' },
@@ -82,6 +82,7 @@ const ICONS = {
   trophy: '<path d="M8 4h8v5a4 4 0 0 1-8 0zM8 6H4v1a4 4 0 0 0 4 4M16 6h4v1a4 4 0 0 1-4 4M12 13v4M8 21h8M9 17h6"/>',
   clock: '<circle cx="12" cy="12" r="9"/><path d="M12 7v5l3 2"/>',
   back: '<path d="M15 18l-6-6 6-6"/>',
+  counter: '<path d="M14.5 17.5L3 6V3h3l11.5 11.5M13 19l6-6M16 16l4 4M19 21l2-2M14.5 6.5L18 3h3v3l-3.5 3.5M5 14l4 4M7 17l-3 3M3 19l2 2"/>',
   pool: '<circle cx="9" cy="8" r="3.2"/><path d="M3 20a6 6 0 0 1 12 0M16 4.5a3 3 0 0 1 0 6M21 20a6 6 0 0 0-3.8-5.6"/>',
 };
 const ic = (n, cls = 'ic') => `<svg viewBox="0 0 24 24" class="${cls}" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">${ICONS[n]}</svg>`;
@@ -416,6 +417,7 @@ const VIEWS = {
   dashboard: { t: 'Главная', icon: 'home', group: 'Обзор', render: renderDashboard },
   meta: { t: 'Мета', icon: 'meta', group: 'Обзор', render: renderMeta, crumb: 'Актуальный патч · OpenDota' },
   builds: { t: 'Билды героев', icon: 'builds', group: 'Обзор', render: renderBuilds },
+  counter: { t: 'Контрпики', icon: 'counter', group: 'Обзор', render: renderCounter, crumb: 'Подбор героя под драфт · OpenDota' },
   mmr: { t: 'ПТС / MMR', icon: 'mmr', group: 'Дневник', render: renderMmr, badge: () => db.mmr.length },
   pool: { t: 'Мой пул', icon: 'pool', group: 'Дневник', render: renderPool, badge: () => new Set(Object.values(db.pool).flat()).size },
   training: { t: 'Тренировки', icon: 'train', group: 'Дневник', render: renderTraining, badge: () => db.trainings.length },
@@ -902,15 +904,17 @@ async function loadHeroPositions(heroId) {
 let ALLPOS = null, allPosPromise = null;
 function loadAllPositions() {
   if (ALLPOS) return Promise.resolve(ALLPOS);
-  const c = cacheGet('d2h_allpos2', 24 * 36e5);
+  const c = cacheGet('d2h_allpos3', 24 * 36e5);
   if (c) return Promise.resolve(ALLPOS = c.data);
   if (allPosPromise) return allPosPromise;
-  allPosPromise = explorer(`WITH ${posCTE(`m.start_time > extract(epoch from now() - interval '60 days')`)}
+  // сначала отбираем матчи по дате — иначе запрос упирается в таймаут OpenDota
+  allPosPromise = explorer(`WITH ms AS (SELECT match_id FROM matches WHERE start_time > extract(epoch from now() - interval '90 days')),
+    ${posCTE('m.match_id IN (SELECT match_id FROM ms)')}
     SELECT hero_id, ${POS_CASE} AS pos, count(*) AS games FROM p GROUP BY 1, 2`)
     .then(rows => {
       const map = {};
       rows.forEach(r => { const m = map[r.hero_id] = map[r.hero_id] || { total: 0 }; m[r.pos] = +r.games; m.total += +r.games; });
-      cacheSet('d2h_allpos2', map);
+      cacheSet('d2h_allpos3', map);
       return (ALLPOS = map);
     })
     .finally(() => { allPosPromise = null; });
@@ -1613,6 +1617,153 @@ function renderNotes(el) {
   $$('#nCat .chip').forEach(c => c.onclick = () => { notesUI.cat = c.dataset.c; $$('#nCat .chip').forEach(x => x.classList.toggle('on', x === c)); draw(); });
   draw();
   if (!HEROES && db.notes.some(n => n.draft)) loadHeroes().then(ok => ok && $('#nGrid') && draw());
+}
+
+/* ============================================================
+   КОНТРПИКИ: подбор героя под драфт
+   ============================================================ */
+const cpUI = { allies: [null, null, null, null], enemies: [null, null, null, null, null], active: { side: 'enemies', i: 0 }, q: '', pos: 0, pool: false, sort: 'adv', check: [] };
+function renderCounter(el) {
+  if (!HEROES) { loadingView(el); loadHeroes().then(ok => { if (CURRENT?.name !== 'counter') return; ok ? renderCounter(el) : offlineView(el, () => renderCounter(el)); }); return; }
+  setActions(`<button class="btn btn-ghost" id="cpClear">${ic('trash')}Очистить драфт</button>`);
+  el.innerHTML = `
+  <div class="stack">
+    <div class="card">
+      <div class="card-head"><div><h3>Драфт</h3><div class="sub">Выбери врагов (и союзников, если уже известны) — приложение подберёт героев, которые лучше всего играют против этого драфта</div></div></div>
+      <div class="dsides cp-sides">
+        <div class="dside rad"><div class="dname">Мои союзники</div><div class="dslots cp4" data-side="allies"></div></div>
+        <div class="dvs">VS</div>
+        <div class="dside dire"><div class="dname">Враги</div><div class="dslots" data-side="enemies"></div></div>
+      </div>
+      <div class="dpick">
+        <label class="search">${ic('search')}<input class="input" id="cpQ" placeholder="Поиск героя… (Enter — поставить первого найденного)" autocomplete="off" value="${esc(cpUI.q)}"></label>
+        <div class="dgrid" id="cpGrid" style="max-height:30vh"></div>
+      </div>
+    </div>
+    <div class="card">
+      <div class="card-head" style="flex-wrap:wrap;gap:10px">
+        <div><h3>Лучшие пики против драфта</h3><div class="sub" id="cpSub">Выбери хотя бы одного врага</div></div>
+        <div class="row" style="gap:8px">
+          <select class="input" id="cpPos" style="width:auto"><option value="0">Любая позиция</option>${POS.map((p, i) => `<option value="${i + 1}" ${cpUI.pos === i + 1 ? 'selected' : ''}>${p}</option>`).join('')}</select>
+          <label class="check-inline"><input type="checkbox" id="cpPool" ${cpUI.pool ? 'checked' : ''}> Только мой пул</label>
+          <div class="seg" id="cpSort"><button type="button" data-s="adv" class="${cpUI.sort === 'adv' ? 'on' : ''}">По контрпику</button><button type="button" data-s="wr" class="${cpUI.sort === 'wr' ? 'on' : ''}">По винрейту</button></div>
+        </div>
+      </div>
+      <div id="cpRes"></div>
+      <div class="row" style="margin-top:14px;gap:8px">
+        <input class="input" id="cpCheck" list="heroList" placeholder="Проверить своего героя против драфта…" autocomplete="off" style="max-width:320px">
+        <span class="muted" style="font-size:12px">Добавит героя в таблицу, даже если он не в топе</span>
+      </div>
+    </div>
+    <div class="muted" style="font-size:12px">Контрпик — насколько герой в среднем играет против врагов лучше, чем ожидается по его обычной силе (в процентных пунктах винрейта; +2 — уже заметный плюс). Данные: матчапы матчей высокого уровня OpenDota, сглажены к среднему при малом числе игр; пары меньше чем с 8 играми не учитываются.</div>
+  </div>`;
+
+  const firstEmpty = () => {
+    for (const side of [cpUI.active?.side || 'enemies', 'enemies', 'allies']) { const i = cpUI[side].findIndex(x => !x); if (i >= 0) return { side, i }; }
+    return null;
+  };
+  const used = () => new Set([...cpUI.allies, ...cpUI.enemies].filter(Boolean));
+  function drawSlots() {
+    $$('.cp-sides .dslots', el).forEach(wrap => {
+      const side = wrap.dataset.side;
+      wrap.innerHTML = cpUI[side].map((id, i) => {
+        const h = id && HERO[id], on = cpUI.active && cpUI.active.side === side && cpUI.active.i === i;
+        return `<button type="button" class="dslot ${on ? 'on' : ''} ${h ? 'filled' : ''}" data-i="${i}" title="${h ? esc(h.localized_name) : 'Выбрать героя'}">${h ? `<img src="${heroImg(h)}" alt=""><span class="dn">${esc(h.localized_name)}</span><span class="rm" data-rm>✕</span>` : '<span class="plus">+</span>'}</button>`;
+      }).join('');
+      $$('.dslot', wrap).forEach(b => b.onclick = e => {
+        const i = +b.dataset.i, had = cpUI[side][i];
+        if (e.target.closest('[data-rm]')) cpUI[side][i] = null;
+        cpUI.active = { side, i };
+        drawSlots(); drawGrid(); if (had && !cpUI[side][i]) drawRes();
+      });
+    });
+  }
+  function drawGrid() {
+    const s = cpUI.q.trim().toLowerCase(), u = used();
+    $('#cpGrid').innerHTML = HEROES.filter(h => !s || h.localized_name.toLowerCase().includes(s)).map(h => `<button type="button" class="dhero ${u.has(h.id) ? 'used' : ''}" data-id="${h.id}" title="${esc(h.localized_name)}"><img src="${heroImg(h)}" alt="" loading="lazy"><span>${esc(h.localized_name)}</span></button>`).join('')
+      || '<div class="muted" style="grid-column:1/-1;padding:14px;text-align:center">Ничего не найдено</div>';
+    $$('#cpGrid .dhero').forEach(b => b.onclick = () => pick(+b.dataset.id));
+  }
+  function pick(id) {
+    if (used().has(id)) { ['allies', 'enemies'].forEach(sd => { const k = cpUI[sd].indexOf(id); if (k >= 0) cpUI[sd][k] = null; }); }
+    else {
+      if (!cpUI.active || cpUI[cpUI.active.side][cpUI.active.i]) cpUI.active = firstEmpty();
+      if (!cpUI.active) { toast('Драфт заполнен — убери героя, чтобы заменить'); return; }
+      cpUI[cpUI.active.side][cpUI.active.i] = id;
+      cpUI.active = firstEmpty();
+    }
+    drawSlots(); drawGrid(); drawRes();
+  }
+
+  let reqId = 0;
+  async function drawRes() {
+    const box = $('#cpRes'); if (!box) return;
+    const enemies = cpUI.enemies.filter(Boolean);
+    if (!enemies.length) { box.innerHTML = `<div class="empty"><div class="big">⚔️</div>Добавь врагов в драфт — здесь появятся контрпики и матчапы.</div>`; $('#cpSub').textContent = 'Выбери хотя бы одного врага'; return; }
+    const my = ++reqId;
+    box.innerHTML = '<div class="spinner" style="margin:24px auto"></div>';
+    let mus;
+    try { mus = await Promise.all(enemies.map(loadMatchups)); }
+    catch { if (my === reqId) box.innerHTML = '<div class="muted">Не удалось загрузить матчапы OpenDota. Проверь интернет и попробуй ещё раз.</div>'; return; }
+    if (my !== reqId || !$('#cpRes')) return;
+    if (cpUI.pos) await loadAllPositions().catch(() => { });
+    if (my !== reqId || !$('#cpRes')) return;
+
+    const MIN = 8, K = 25;
+    // по каждому врагу: карта candidateId → { g, w (победы кандидата) }, и средний винрейт против врага
+    const per = enemies.map((eid, k) => {
+      const map = {}; let G = 0, W = 0;
+      mus[k].forEach(m => { const g = m.games_played, ew = m.wins; map[m.hero_id] = { g, w: g - ew }; G += g; W += g - ew; });
+      return { eid, map, base: G ? W / G : 0.5 };
+    });
+    const meta = {}; bracketStats(db.bracket).forEach(r => meta[r.h.id] = r);
+    const u = used(), inPool = new Set(Object.values(db.pool).flat()), poolSet = cpUI.pos ? new Set(db.pool[cpUI.pos]) : inPool;
+    // Общая сила кандидата на высоком ранге (Божество/Титан) — чтобы контрпик не путался с «просто сильным героем»
+    const hiBase = h => { const p = h['7_pick'] || 0, w = h['7_win'] || 0; return p > 200 ? w / p : 0.5; };
+    const calc = h => {
+      let adv = 0, wrSum = 0, n = 0;
+      const cb = hiBase(h);
+      const cells = per.map(p => {
+        const x = p.map[h.id];
+        if (!x || x.g < MIN) return null;
+        const exp = Math.max(0.05, Math.min(0.95, cb + p.base - 0.5)); // ожидаемый винрейт без учёта матчапа
+        const sm = (x.w + K * exp) / (x.g + K);                         // сглаженный фактический винрейт
+        const a = (sm - exp) * 100;
+        adv += a; wrSum += sm * 100; n++;
+        return { wr: x.w / x.g * 100, g: x.g, adv: a };
+      });
+      return { h, cells, adv: n ? adv / n : 0, wr: n ? wrSum / n : 0, n, meta: meta[h.id] };
+    };
+    let rows = HEROES.filter(h => !u.has(h.id) && (!cpUI.pos || heroFitsPos(h, cpUI.pos) || poolSet.has(h.id)) && (!cpUI.pool || poolSet.has(h.id)))
+      .map(calc).filter(r => r.n >= Math.min(enemies.length, Math.ceil(enemies.length / 2)));
+    rows.sort((a, b) => cpUI.sort === 'wr' ? b.wr - a.wr : b.adv - a.adv);
+    const top = rows.slice(0, 15);
+    cpUI.check.forEach(id => { if (!u.has(id) && HERO[id] && !top.some(r => r.h.id === id)) top.push({ ...calc(HERO[id]), checked: true }); });
+
+    $('#cpSub').textContent = `${rows.length} ${plural(rows.length, 'герой', 'героя', 'героев')} подходит${cpUI.pos ? ' · ' + POS[cpUI.pos - 1] : ''}${cpUI.pool ? ' · только пул' : ''}`;
+    if (!top.length) { box.innerHTML = `<div class="muted">${cpUI.pool ? 'В твоём пуле нет подходящих героев с достаточной статистикой. Сними галочку «Только мой пул».' : 'Недостаточно данных.'}</div>`; return; }
+    const cell = c => c ? `<td class="cp-cell" style="--a:${Math.max(-1, Math.min(1, c.adv / 5))}" title="${c.g} ${plural(c.g, 'игра', 'игры', 'игр')}"><b>${pct(c.wr, 0)}</b><span>${c.adv >= 0 ? '+' : ''}${c.adv.toFixed(1)}</span></td>` : '<td class="cp-cell na">—</td>';
+    box.innerHTML = `<div style="overflow-x:auto"><table class="table cp-table"><thead><tr><th>#</th><th>Герой</th><th>Контрпик</th><th>WR против</th><th class="hide-m">Мета</th>${enemies.map(id => `<th class="cp-eh" title="${esc(HERO[id].localized_name)}"><img src="${heroImg(HERO[id])}" alt=""></th>`).join('')}</tr></thead><tbody>
+      ${top.map((r, i) => `<tr class="${r.checked ? 'cp-checked' : ''}">
+        <td class="muted">${r.checked ? '★' : i + 1}</td>
+        <td><a class="mini-hero" href="#/builds/${r.h.id}"><img src="${heroImg(r.h)}" alt=""><div><b>${esc(r.h.localized_name)}</b>${inPool.has(r.h.id) ? ' <span class="tag">пул</span>' : ''}</div></a></td>
+        <td><b class="${r.adv >= 0 ? 'pos' : 'neg'}">${r.adv >= 0 ? '+' : ''}${r.adv.toFixed(1)}</b></td>
+        <td><b class="${r.wr >= 50 ? 'pos' : 'neg'}">${r.n ? pct(r.wr, 1) : '—'}</b></td>
+        <td class="hide-m">${r.meta ? `<span class="${r.meta.wr >= 50 ? 'pos' : 'neg'}">${pct(r.meta.wr, 1)}</span> <span class="tbadge t-${r.meta.tier}">${r.meta.tier}</span>` : '—'}</td>
+        ${r.cells.map(cell).join('')}
+      </tr>`).join('')}</tbody></table></div>
+      <div class="cp-legend muted">В ячейках: винрейт героя против этого врага и отличие от ожидаемого (п.п.). Наведи на ячейку — увидишь число игр.</div>`;
+  }
+
+  $('#cpQ').oninput = e => { cpUI.q = e.target.value; drawGrid(); };
+  $('#cpQ').onkeydown = e => { if (e.key === 'Enter') { e.preventDefault(); const b = $('#cpGrid .dhero:not(.used)'); if (b) pick(+b.dataset.id); cpUI.q = ''; e.target.value = ''; drawGrid(); } };
+  $('#cpPos').onchange = e => { cpUI.pos = +e.target.value; drawRes(); };
+  $('#cpPool').onchange = e => { cpUI.pool = e.target.checked; drawRes(); };
+  $$('#cpSort button').forEach(b => b.onclick = () => { cpUI.sort = b.dataset.s; $$('#cpSort button').forEach(x => x.classList.toggle('on', x === b)); drawRes(); });
+  $('#cpCheck').onchange = e => { const h = heroByName(e.target.value); if (h) { if (!cpUI.check.includes(h.id)) cpUI.check.push(h.id); e.target.value = ''; drawRes(); } };
+  $('#cpClear').onclick = () => { cpUI.allies = [null, null, null, null]; cpUI.enemies = [null, null, null, null, null]; cpUI.check = []; cpUI.active = { side: 'enemies', i: 0 }; renderCounter(el); };
+  if (!cpUI.active || cpUI[cpUI.active.side][cpUI.active.i]) cpUI.active = firstEmpty();
+  drawSlots(); drawGrid(); drawRes();
 }
 
 /* ============================================================
